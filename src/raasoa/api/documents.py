@@ -11,6 +11,8 @@ from raasoa.schemas.document import (
     DocumentWithChunks,
 )
 
+ACTIVE_STATUSES = "('pending', 'indexed', 'active')"
+
 router = APIRouter(prefix="/v1", tags=["documents"])
 
 
@@ -31,7 +33,7 @@ async def list_documents(
         text(
             "SELECT id, title, source_object_id, doc_type, status, chunk_count, "
             "version, index_tier, quality_score, last_synced_at, last_embedded_at, created_at "
-            "FROM documents WHERE tenant_id = :tid "
+            "FROM documents WHERE tenant_id = :tid AND status != 'deleted' "
             "ORDER BY created_at DESC LIMIT :lim OFFSET :off"
         ),
         {"tid": tenant_id, "lim": limit, "off": offset},
@@ -134,3 +136,40 @@ async def get_document(
             for c in chunks
         ],
     )
+
+
+@router.delete("/documents/{document_id}")
+async def delete_document(
+    document_id: uuid.UUID,
+    x_tenant_id: str = Header(default="00000000-0000-0000-0000-000000000001"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Soft-delete a document (sets status to 'deleted', excluded from search)."""
+    try:
+        tenant_id = uuid.UUID(x_tenant_id)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail="Invalid tenant ID") from err
+
+    result = await session.execute(
+        text("SELECT id FROM documents WHERE id = :did AND tenant_id = :tid"),
+        {"did": document_id, "tid": tenant_id},
+    )
+    if not result.first():
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    await session.execute(
+        text(
+            "UPDATE documents SET status = 'deleted', "
+            "review_status = 'rejected' WHERE id = :did"
+        ),
+        {"did": document_id},
+    )
+
+    # Mark all claims as rejected
+    await session.execute(
+        text("UPDATE claims SET status = 'rejected' WHERE document_id = :did"),
+        {"did": document_id},
+    )
+
+    await session.commit()
+    return {"status": "deleted", "document_id": str(document_id)}

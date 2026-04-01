@@ -1,16 +1,20 @@
+import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.config import settings
 from raasoa.db import get_session
 from raasoa.ingestion.pipeline import ingest_file
+from raasoa.middleware.rate_limit import extract_tenant_id, get_ingest_limiter
 from raasoa.models.source import Source
 from raasoa.models.tenant import Tenant
 from raasoa.providers.factory import get_embedding_provider
 from raasoa.schemas.ingestion import IngestResponse, QualityFindingSummary
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["ingestion"])
 
@@ -50,11 +54,15 @@ async def _ensure_default_tenant_and_source(
 
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest_document(
+    request: Request,
     file: UploadFile = File(...),
     x_tenant_id: str = Header(default="00000000-0000-0000-0000-000000000001"),
     session: AsyncSession = Depends(get_session),
 ) -> IngestResponse:
     """Upload and ingest a document with quality assessment."""
+    # Rate limit check
+    get_ingest_limiter().check(extract_tenant_id(request))
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
@@ -88,7 +96,11 @@ async def ingest_document(
             embedding_provider=provider,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}") from e
+        logger.exception("Ingestion failed for file '%s'", file.filename)
+        raise HTTPException(
+            status_code=500,
+            detail="Ingestion failed. Check server logs for details.",
+        ) from e
 
     # Refresh doc from DB (session may have expired after commits in pipeline)
     await session.refresh(doc)

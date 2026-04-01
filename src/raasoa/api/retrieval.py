@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends
+from fastapi import Request as FastAPIRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
+from raasoa.middleware.rate_limit import get_retrieve_limiter
 from raasoa.providers.factory import get_embedding_provider
 from raasoa.retrieval.confidence import compute_confidence
 from raasoa.retrieval.hybrid_search import search
@@ -18,10 +20,12 @@ router = APIRouter(prefix="/v1", tags=["retrieval"])
 
 @router.post("/retrieve", response_model=RetrieveResponse)
 async def retrieve(
+    http_request: FastAPIRequest,
     request: RetrieveRequest,
     session: AsyncSession = Depends(get_session),
 ) -> RetrieveResponse:
     """Hybrid search with RRF fusion and confidence scoring."""
+    get_retrieve_limiter().check(str(request.tenant_id))
     provider = get_embedding_provider()
     reranker = PassthroughReranker()
 
