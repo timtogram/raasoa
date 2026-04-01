@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "raasoa-api",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "uvicorn", "raasoa.main:app", "--reload", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

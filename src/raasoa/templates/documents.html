@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Documents - RAASOA{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">All Documents</h1>
+
+<div class="bg-white rounded-lg border overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Title</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Type</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Quality</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Review</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Conflicts</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Chunks</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Claims</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Version</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for doc in documents %}
+            <tr class="border-t hover:bg-gray-50">
+                <td class="px-4 py-2"><a href="/dashboard/documents/{{ doc.id }}" class="text-blue-600 hover:underline">{{ doc.title or '(untitled)' }}</a></td>
+                <td class="px-4 py-2 text-gray-500 text-xs">{{ doc.doc_type or '-' }}</td>
+                <td class="px-4 py-2">
+                    {% if doc.quality_score is not none %}
+                    <span class="px-2 py-0.5 rounded text-xs {% if doc.quality_score >= 0.8 %}bg-green-100 text-green-800{% elif doc.quality_score >= 0.5 %}bg-yellow-100 text-yellow-800{% else %}bg-red-100 text-red-800{% endif %}">
+                        {{ "%.0f"|format(doc.quality_score * 100) }}%
+                    </span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-2">
+                    <span class="px-2 py-0.5 rounded text-xs
+                        {% if doc.review_status == 'published' %}bg-green-100 text-green-800
+                        {% elif doc.review_status == 'needs_review' %}bg-yellow-100 text-yellow-800
+                        {% elif doc.review_status == 'quarantined' %}bg-red-100 text-red-800
+                        {% elif doc.review_status == 'superseded' %}bg-gray-100 text-gray-600
+                        {% else %}bg-blue-100 text-blue-800{% endif %}">
+                        {{ doc.review_status }}
+                    </span>
+                </td>
+                <td class="px-4 py-2">
+                    {% if doc.conflict_status == 'conflicts_detected' %}
+                    <span class="px-2 py-0.5 rounded text-xs bg-red-100 text-red-800">conflicts</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td class="px-4 py-2 text-gray-600">{{ doc.chunk_count }}</td>
+                <td class="px-4 py-2 text-gray-600">{{ doc.claim_count }}</td>
+                <td class="px-4 py-2 text-gray-400">v{{ doc.version }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

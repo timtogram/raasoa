@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Conflicts - RAASOA{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Conflicts & Contradictions</h1>
+
+{% if not conflicts %}
+<div class="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
+    <div class="text-green-800 font-semibold">No open conflicts</div>
+    <div class="text-green-600 text-sm mt-1">All contradictions have been resolved.</div>
+</div>
+{% endif %}
+
+<div class="space-y-4">
+{% for c in conflicts %}
+<div class="bg-white rounded-lg border p-5" id="conflict-{{ c.id }}">
+    <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 rounded text-xs font-medium
+                {% if c.conflict_type == 'claim_contradiction' %}bg-red-100 text-red-800
+                {% elif c.conflict_type == 'potential_contradiction' %}bg-orange-100 text-orange-800
+                {% elif c.conflict_type == 'exact_duplicate' %}bg-purple-100 text-purple-800
+                {% else %}bg-gray-100 text-gray-800{% endif %}">
+                {{ c.conflict_type }}
+            </span>
+            <span class="text-sm text-gray-500">Confidence: {{ "%.0f"|format((c.confidence or 0) * 100) }}%</span>
+        </div>
+        <span class="text-xs text-gray-400">{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+    </div>
+
+    {% if c.details and c.details.get('new_claim') %}
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="bg-blue-50 rounded p-3">
+            <div class="text-xs text-blue-600 font-medium mb-1">Document A (newer)</div>
+            <div class="text-sm font-semibold text-gray-900">{{ c.details.new_claim.predicate }}</div>
+            <div class="text-lg font-bold text-blue-700">= {{ c.details.new_claim.value }}</div>
+            <div class="text-xs text-gray-500 mt-2 line-clamp-2">{{ c.details.new_claim.evidence[:150] }}...</div>
+        </div>
+        <div class="bg-orange-50 rounded p-3">
+            <div class="text-xs text-orange-600 font-medium mb-1">Document B ({{ c.details.get('existing_doc_title', 'existing') }})</div>
+            <div class="text-sm font-semibold text-gray-900">{{ c.details.existing_claim.predicate }}</div>
+            <div class="text-lg font-bold text-orange-700">= {{ c.details.existing_claim.value }}</div>
+            <div class="text-xs text-gray-500 mt-2 line-clamp-2">{{ c.details.existing_claim.evidence[:150] }}...</div>
+        </div>
+    </div>
+    {% elif c.details and c.details.get('message') %}
+    <p class="text-sm text-gray-700 mb-3">{{ c.details.message }}</p>
+    {% endif %}
+
+    {% if c.status == 'new' %}
+    <div class="flex gap-2 mt-3">
+        <button
+            hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
+            hx-vals='{"resolution": "keep_a", "comment": ""}'
+            hx-target="#conflict-{{ c.id }}"
+            hx-swap="outerHTML"
+            class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
+            Keep Doc A
+        </button>
+        <button
+            hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
+            hx-vals='{"resolution": "keep_b", "comment": ""}'
+            hx-target="#conflict-{{ c.id }}"
+            hx-swap="outerHTML"
+            class="px-3 py-1.5 bg-orange-600 text-white text-sm rounded hover:bg-orange-700">
+            Keep Doc B
+        </button>
+        <button
+            hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
+            hx-vals='{"resolution": "keep_both", "comment": ""}'
+            hx-target="#conflict-{{ c.id }}"
+            hx-swap="outerHTML"
+            class="px-3 py-1.5 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300">
+            Both Valid
+        </button>
+    </div>
+    {% else %}
+    <div class="text-sm text-green-600 font-medium mt-2">Resolved: {{ c.details.get('resolution', c.status) if c.details else c.status }}</div>
+    {% endif %}
+</div>
+{% endfor %}
+</div>
+{% endblock %}
