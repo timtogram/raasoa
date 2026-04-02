@@ -1,0 +1,51 @@
+[
+  {
+    "query": "Welches Tool nutzen wir für Datenvisualisierung?",
+    "relevant_doc_ids": [],
+    "relevant_chunk_ids": [],
+    "expected_answerable": true,
+    "notes": "Should find SAP Analytics Cloud (current) or Power BI (superseded). Tests contradiction handling."
+  },
+  {
+    "query": "How do we scale AI from pilot to production?",
+    "relevant_doc_ids": [],
+    "relevant_chunk_ids": [],
+    "expected_answerable": true,
+    "notes": "Should find Digital Excellence Outlook 2026 content."
+  },
+  {
+    "query": "Was kostet die KI-Strategie Beratung?",
+    "relevant_doc_ids": [],
+    "relevant_chunk_ids": [],
+    "expected_answerable": true,
+    "notes": "Should find Mesakumo Playbook with 35k-50k EUR pricing."
+  },
+  {
+    "query": "What are the six principles of AI-ready data?",
+    "relevant_doc_ids": [],
+    "relevant_chunk_ids": [],
+    "expected_answerable": true,
+    "notes": "Should find Qlik article about Diversity, Timeliness, Accuracy, Security, Discoverability, Consumability."
+  },
+  {
+    "query": "remote work policy allowance",
+    "relevant_doc_ids": [],
+    "relevant_chunk_ids": [],
+    "expected_answerable": true,
+    "notes": "Should find HR Policy with 500 EUR/year equipment allowance."
+  },
+  {
+    "query": "How many documents are in the knowledge base?",
+    "relevant_doc_ids": [],
+    "relevant_chunk_ids": [],
+    "expected_answerable": true,
+    "notes": "Structured query — should return document count via SQL, not RAG."
+  },
+  {
+    "query": "Wie strukturiert man Projektdokumentation für AI Agenten?",
+    "relevant_doc_ids": [],
+    "relevant_chunk_ids": [],
+    "expected_answerable": true,
+    "notes": "Should find Wissensstrukturen article about 5-Layer Architecture."
+  }
+]

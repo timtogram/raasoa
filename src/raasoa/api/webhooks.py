@@ -93,6 +93,23 @@ async def webhook_ingest(
         await session.flush()
         source_id = source.id
 
+    # Data contract validation (before any processing)
+    if payload.event in ("document.created", "document.updated"):
+        from raasoa.ingestion.validation import validate_webhook_payload
+
+        validation = validate_webhook_payload(
+            source=payload.source,
+            content=payload.content,
+            metadata=payload.metadata,
+            title=payload.title,
+        )
+        if not validation.valid:
+            return WebhookResponse(
+                status="rejected",
+                event=payload.event,
+                message=f"Data contract violated: {validation.reason}",
+            )
+
     if payload.event == "document.deleted":
         result = await session.execute(
             text(
