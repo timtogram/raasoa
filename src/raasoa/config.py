@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     claim_extraction_enabled: bool = True
     ollama_chat_model: str = "qwen3:8b"
 
+    # Reranking
+    reranker: str = "passthrough"  # passthrough | ollama | cohere
+
     # Rate Limiting
     ingest_rate_limit_per_minute: int = 30
     retrieve_rate_limit_per_minute: int = 120

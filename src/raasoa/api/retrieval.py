@@ -10,9 +10,9 @@ from raasoa.db import get_session
 from raasoa.middleware.rate_limit import get_retrieve_limiter
 from raasoa.providers.factory import get_embedding_provider
 from raasoa.retrieval.confidence import compute_confidence
+from raasoa.retrieval.factory import get_reranker
 from raasoa.retrieval.hybrid_search import search
 from raasoa.retrieval.query_router import QueryType, route_query
-from raasoa.retrieval.reranker import PassthroughReranker
 from raasoa.retrieval.structured import structured_query
 from raasoa.schemas.retrieval import (
     ChunkHit,
@@ -62,7 +62,7 @@ async def retrieve(
     # 3. Handle RAG queries (or fallback)
     if routing.query_type == QueryType.RAG:
         provider = get_embedding_provider()
-        reranker = PassthroughReranker()
+        reranker = get_reranker()
 
         search_results = await search(
             session=session,
