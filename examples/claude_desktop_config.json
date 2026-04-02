@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "raasoa": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "raasoa.mcp"],
+      "cwd": "/path/to/raasoa",
+      "env": {
+        "RAASOA_URL": "http://localhost:8000",
+        "RAASOA_TENANT": "00000000-0000-0000-0000-000000000001"
+      }
+    }
+  }
+}

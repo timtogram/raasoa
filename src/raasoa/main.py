@@ -9,6 +9,7 @@ from raasoa.api.health import router as health_router
 from raasoa.api.ingestion import router as ingestion_router
 from raasoa.api.quality import router as quality_router
 from raasoa.api.retrieval import router as retrieval_router
+from raasoa.api.webhooks import router as webhooks_router
 from raasoa.dashboard.routes import router as dashboard_router
 
 logging.basicConfig(
@@ -29,6 +30,7 @@ app.include_router(retrieval_router)
 app.include_router(documents_router)
 app.include_router(quality_router)
 app.include_router(acl_router)
+app.include_router(webhooks_router)
 app.include_router(dashboard_router)
 
 

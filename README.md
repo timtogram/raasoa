@@ -282,6 +282,14 @@ Switch providers with one environment variable:
 | `/v1/acl/{document_id}` | GET | List ACL entries |
 | `/v1/acl/{entry_id}` | DELETE | Remove an ACL entry |
 
+### Webhooks (Source Connectors)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/webhooks/ingest` | POST | Receive document events from external sources |
+
+Supports events: `document.created`, `document.updated`, `document.deleted` from any source (SharePoint, Jira, Confluence, custom).
+
 ### Health
 
 | Endpoint | Method | Description |
@@ -298,6 +306,52 @@ Switch providers with one environment variable:
 | `/dashboard/documents/{id}` | Document detail with claims and findings |
 | `/dashboard/conflicts` | Conflict list with inline resolution |
 | `/dashboard/reviews` | Review tasks with approve/reject |
+
+## MCP Server (AI Agent Integration)
+
+RAASOA includes a built-in MCP (Model Context Protocol) server, allowing AI agents like Claude Desktop, Cursor, and Windsurf to directly search and manage your knowledge base.
+
+### Setup for Claude Desktop
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "raasoa": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "raasoa.mcp"],
+      "cwd": "/path/to/raasoa"
+    }
+  }
+}
+```
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `raasoa_search` | Hybrid search with confidence scoring |
+| `raasoa_ingest` | Ingest text content into the knowledge base |
+| `raasoa_list_documents` | List all documents with quality info |
+| `raasoa_get_document` | Get full document details and chunks |
+| `raasoa_quality_report` | Quality report with findings |
+| `raasoa_list_conflicts` | List detected contradictions |
+
+## Background Worker
+
+Batch operations without Celery or Redis:
+
+```bash
+# Batch ingest all files from a directory
+uv run python -m raasoa.worker batch ingest /path/to/documents/
+
+# Run maintenance (tiering sweep, cleanup)
+uv run python -m raasoa.worker batch maintenance
+
+# Tiering sweep only
+uv run python -m raasoa.worker batch tiering
+```
 
 ## Configuration
 
@@ -364,10 +418,11 @@ uv run ruff check src/ tests/
 - [x] Cross-encoder / LLM reranking (Ollama)
 - [x] Python client SDK + CLI (12 commands)
 - [x] Docker with health checks and DB wait loop
-- [ ] SharePoint / Jira / Confluence connectors
-- [ ] MCP server adapter (for Claude, Cursor, AI agents)
-- [ ] OpenTelemetry tracing
-- [ ] Background worker for batch ingestion
+- [x] MCP server adapter (for Claude Desktop, Cursor, AI agents)
+- [x] Webhook-based source connectors (SharePoint, Jira, Confluence, custom)
+- [x] Background worker for batch ingestion + maintenance
+- [x] OpenTelemetry tracing (optional)
+- [ ] Native SharePoint / Jira / Confluence polling connectors
 
 ## License
 
