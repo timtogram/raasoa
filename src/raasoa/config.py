@@ -21,12 +21,15 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_embedding_model: str = "nomic-embed-text"
 
-    # OpenAI
+    # OpenAI / Azure OpenAI / OpenAI-compatible
     openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
     openai_embedding_model: str = "text-embedding-3-small"
+    openai_api_version: str = "2024-02-01"  # Azure OpenAI API version
 
     # Cohere
     cohere_api_key: str = ""
+    cohere_base_url: str = "https://api.cohere.com"
     cohere_embedding_model: str = "embed-v4.0"
 
     # Chunking

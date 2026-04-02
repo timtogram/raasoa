@@ -1,3 +1,12 @@
+"""Cohere embedding and reranking provider.
+
+Configuration:
+  EMBEDDING_PROVIDER=cohere
+  COHERE_API_KEY=xxx
+  COHERE_BASE_URL=https://api.cohere.com  (default, or custom endpoint)
+  COHERE_EMBEDDING_MODEL=embed-v4.0
+"""
+
 import httpx
 
 from raasoa.config import settings
@@ -7,13 +16,15 @@ from raasoa.providers.base import ScoredDocument
 class CohereEmbeddingProvider:
     def __init__(
         self,
-        api_key: str = settings.cohere_api_key,
-        model: str = settings.cohere_embedding_model,
-        dimensions: int = settings.embedding_dimensions,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        dimensions: int | None = None,
     ) -> None:
-        self._api_key = api_key
-        self._model = model
-        self._dimensions = dimensions
+        self._api_key = api_key or settings.cohere_api_key
+        self._base_url = (base_url or settings.cohere_base_url).rstrip("/")
+        self._model = model or settings.cohere_embedding_model
+        self._dimensions = dimensions or settings.embedding_dimensions
 
     @property
     def model_id(self) -> str:
@@ -24,9 +35,12 @@ class CohereEmbeddingProvider:
         return self._dimensions
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                "https://api.cohere.com/v2/embed",
+                f"{self._base_url}/v2/embed",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 json={
                     "model": self._model,
@@ -43,18 +57,20 @@ class CohereEmbeddingProvider:
 class CohereRerankProvider:
     def __init__(
         self,
-        api_key: str = settings.cohere_api_key,
+        api_key: str | None = None,
+        base_url: str | None = None,
         model: str = "rerank-v3.5",
     ) -> None:
-        self._api_key = api_key
+        self._api_key = api_key or settings.cohere_api_key
+        self._base_url = (base_url or settings.cohere_base_url).rstrip("/")
         self._model = model
 
     async def rerank(
-        self, query: str, documents: list[str], top_k: int
+        self, query: str, documents: list[str], top_k: int,
     ) -> list[ScoredDocument]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                "https://api.cohere.com/v2/rerank",
+                f"{self._base_url}/v2/rerank",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 json={
                     "model": self._model,
