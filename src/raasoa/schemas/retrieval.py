@@ -1,17 +1,19 @@
-import uuid
-
 from pydantic import BaseModel, Field
 
 
 class RetrieveRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
-    tenant_id: uuid.UUID
     top_k: int = Field(default=5, ge=1, le=50)
+    principal_id: str | None = Field(
+        default=None,
+        description="User/group ID for ACL filtering. "
+        "Only documents accessible to this principal are returned.",
+    )
 
 
 class ChunkHit(BaseModel):
-    chunk_id: uuid.UUID
-    document_id: uuid.UUID
+    chunk_id: str
+    document_id: str
     text: str
     section_title: str | None
     chunk_type: str

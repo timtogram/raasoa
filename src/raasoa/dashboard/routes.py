@@ -1,16 +1,20 @@
-"""HTMX + Jinja2 Dashboard routes for quality governance."""
+"""HTMX + Jinja2 Dashboard routes for quality governance.
 
-from __future__ import annotations
+Protected by password when DASHBOARD_PASSWORD is set.
+"""
 
+import json as _json
+import secrets
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from raasoa.config import settings
 from raasoa.db import get_session
 
 templates = Jinja2Templates(
@@ -21,15 +25,62 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
 
+_valid_sessions: set[str] = set()
+
+
+def _check_auth(request: Request) -> RedirectResponse | None:
+    """Return redirect if dashboard auth required, None if ok."""
+    if not settings.dashboard_password:
+        return None
+    token = request.cookies.get("raasoa_session", "")
+    if token in _valid_sessions:
+        return None
+    return RedirectResponse("/dashboard/login", status_code=302)
+
+
+# ── Auth ────────────────────────────────────────────────
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request) -> Response:
+    if not settings.dashboard_password:
+        return RedirectResponse("/dashboard", status_code=302)
+    return templates.TemplateResponse(
+        request, "login.html", {"active": "login", "error": None},
+    )
+
+
+@router.post("/login", response_model=None)
+async def login_post(
+    request: Request, password: str = Form(...),
+) -> Response:
+    if password == settings.dashboard_password:
+        token = secrets.token_urlsafe(32)
+        _valid_sessions.add(token)
+        resp = RedirectResponse("/dashboard", status_code=302)
+        resp.set_cookie(
+            "raasoa_session", token,
+            httponly=True, samesite="lax", max_age=86400,
+        )
+        return resp
+    return templates.TemplateResponse(
+        request, "login.html",
+        {"active": "login", "error": "Invalid password."},
+    )
+
+
+# ── Pages ───────────────────────────────────────────────
+
 
 @router.get("", response_class=HTMLResponse)
 async def dashboard_home(
     request: Request,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
     tid = DEFAULT_TENANT
 
-    # Gather stats
     stats_result = await session.execute(text(
         "SELECT "
         "(SELECT COUNT(*) FROM documents WHERE tenant_id = :tid) as total_documents, "
@@ -40,24 +91,23 @@ async def dashboard_home(
     ), {"tid": tid})
     stats = stats_result.first()
 
-    # Recent documents with claim counts
     docs_result = await session.execute(text(
         "SELECT d.*, "
         "(SELECT COUNT(*) FROM claims c WHERE c.document_id = d.id) as claim_count "
         "FROM documents d WHERE d.tenant_id = :tid "
         "ORDER BY d.created_at DESC LIMIT 10"
     ), {"tid": tid})
-    recent_docs = docs_result.fetchall()
 
     return templates.TemplateResponse(
         request, "dashboard.html",
-        {"active": "home", "stats": stats, "recent_docs": recent_docs},
+        {"active": "home", "stats": stats, "recent_docs": docs_result.fetchall()},
     )
 
 
 @router.get("/search", response_class=HTMLResponse)
-async def search_page(request: Request) -> HTMLResponse:
-    """Search playground for testing retrieval."""
+async def search_page(request: Request) -> Response:
+    if redir := _check_auth(request):
+        return redir
     return templates.TemplateResponse(
         request, "search.html",
         {"active": "search", "tenant_id": DEFAULT_TENANT},
@@ -65,8 +115,9 @@ async def search_page(request: Request) -> HTMLResponse:
 
 
 @router.get("/upload", response_class=HTMLResponse)
-async def upload_page(request: Request) -> HTMLResponse:
-    """File upload page with drag & drop."""
+async def upload_page(request: Request) -> Response:
+    if redir := _check_auth(request):
+        return redir
     return templates.TemplateResponse(
         request, "upload.html", {"active": "upload"},
     )
@@ -76,30 +127,23 @@ async def upload_page(request: Request) -> HTMLResponse:
 async def sources_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Data sources and connector management page."""
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
     tid = DEFAULT_TENANT
 
-    # Get active sources with document counts
     result = await session.execute(text(
         "SELECT s.id, s.name, s.source_type, s.connection_config, "
         "(SELECT COUNT(*) FROM documents d WHERE d.source_id = s.id "
         " AND d.status != 'deleted') as doc_count "
         "FROM sources s WHERE s.tenant_id = :tid ORDER BY s.name"
     ), {"tid": tid})
-    sources = result.fetchall()
 
-    # Determine webhook URL from request
     webhook_url = str(request.base_url).rstrip("/")
-
     return templates.TemplateResponse(
         request, "sources.html",
-        {
-            "active": "sources",
-            "sources": sources,
-            "webhook_url": webhook_url,
-            "tenant_id": tid,
-        },
+        {"active": "sources", "sources": result.fetchall(),
+         "webhook_url": webhook_url, "tenant_id": tid},
     )
 
 
@@ -107,7 +151,9 @@ async def sources_page(
 async def documents_list(
     request: Request,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
     tid = DEFAULT_TENANT
     result = await session.execute(text(
         "SELECT d.*, "
@@ -115,7 +161,6 @@ async def documents_list(
         "FROM documents d WHERE d.tenant_id = :tid "
         "ORDER BY d.created_at DESC LIMIT 100"
     ), {"tid": tid})
-
     return templates.TemplateResponse(
         request, "documents.html",
         {"active": "documents", "documents": result.fetchall()},
@@ -127,28 +172,28 @@ async def document_detail(
     request: Request,
     document_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
+
+    # Tenant-scoped document fetch
+    tid = DEFAULT_TENANT
     doc_result = await session.execute(
-        text("SELECT * FROM documents WHERE id = :did"), {"did": document_id}
+        text("SELECT * FROM documents WHERE id = :did AND tenant_id = :tid"),
+        {"did": document_id, "tid": tid},
     )
     doc = doc_result.first()
+    if not doc:
+        return HTMLResponse("<h1>Document not found</h1>", status_code=404)
 
     findings_result = await session.execute(
-        text(
-            "SELECT * FROM quality_findings WHERE document_id = :did "
-            "ORDER BY created_at"
-        ),
+        text("SELECT * FROM quality_findings WHERE document_id = :did ORDER BY created_at"),
         {"did": document_id},
     )
-
     claims_result = await session.execute(
-        text(
-            "SELECT * FROM claims WHERE document_id = :did "
-            "ORDER BY created_at"
-        ),
+        text("SELECT * FROM claims WHERE document_id = :did ORDER BY created_at"),
         {"did": document_id},
     )
-
     chunks_result = await session.execute(
         text(
             "SELECT id, chunk_index, chunk_text, section_title, "
@@ -157,11 +202,12 @@ async def document_detail(
         ),
         {"did": document_id},
     )
-
     return templates.TemplateResponse(
         request, "document_detail.html",
-        {"active": "documents", "doc": doc, "findings": findings_result.fetchall(),
-         "claims": claims_result.fetchall(), "chunks": chunks_result.fetchall()},
+        {"active": "documents", "doc": doc,
+         "findings": findings_result.fetchall(),
+         "claims": claims_result.fetchall(),
+         "chunks": chunks_result.fetchall()},
     )
 
 
@@ -169,7 +215,9 @@ async def document_detail(
 async def conflicts_list(
     request: Request,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
     tid = DEFAULT_TENANT
     result = await session.execute(text(
         "SELECT * FROM conflict_candidates "
@@ -178,11 +226,35 @@ async def conflicts_list(
         "confidence DESC NULLS LAST, created_at DESC "
         "LIMIT 100"
     ), {"tid": tid})
-
     return templates.TemplateResponse(
         request, "conflicts.html",
         {"active": "conflicts", "conflicts": result.fetchall()},
     )
+
+
+@router.get("/reviews", response_class=HTMLResponse)
+async def reviews_list(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
+    tid = DEFAULT_TENANT
+    result = await session.execute(text(
+        "SELECT r.*, d.title as doc_title "
+        "FROM review_tasks r "
+        "LEFT JOIN documents d ON r.document_id = d.id "
+        "WHERE r.tenant_id = :tid "
+        "ORDER BY CASE WHEN r.status = 'new' THEN 0 ELSE 1 END, "
+        "r.created_at DESC LIMIT 100"
+    ), {"tid": tid})
+    return templates.TemplateResponse(
+        request, "reviews.html",
+        {"active": "reviews", "reviews": result.fetchall()},
+    )
+
+
+# ── HTMX Mutations ─────────────────────────────────────
 
 
 @router.post("/api/conflicts/{conflict_id}/resolve", response_class=HTMLResponse)
@@ -192,16 +264,18 @@ async def resolve_conflict_htmx(
     resolution: str = Form(...),
     comment: str = Form(default=""),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """HTMX endpoint: resolve a conflict and return updated HTML."""
-    # Get conflict details
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
+
+    tid = DEFAULT_TENANT
     result = await session.execute(
         text(
-            "SELECT id, document_a_id, document_b_id, conflict_type, "
-            "confidence, details, status, created_at "
-            "FROM conflict_candidates WHERE id = :cid"
+            "SELECT id, document_a_id, document_b_id "
+            "FROM conflict_candidates "
+            "WHERE id = :cid AND tenant_id = :tid"
         ),
-        {"cid": conflict_id},
+        {"cid": conflict_id, "tid": tid},
     )
     conflict = result.first()
     if not conflict:
@@ -215,23 +289,25 @@ async def resolve_conflict_htmx(
 
     if superseded_doc_id:
         await session.execute(
-            text("UPDATE documents SET review_status = 'superseded' WHERE id = :did"),
-            {"did": superseded_doc_id},
+            text(
+                "UPDATE documents SET review_status = 'superseded' "
+                "WHERE id = :did AND tenant_id = :tid"
+            ),
+            {"did": superseded_doc_id, "tid": tid},
         )
         await session.execute(
             text("UPDATE claims SET status = 'superseded' WHERE document_id = :did"),
             {"did": superseded_doc_id},
         )
 
+    resolution_data = _json.dumps({"resolution": resolution, "comment": comment})
     await session.execute(
         text(
             "UPDATE conflict_candidates SET status = 'resolved', "
-            "details = details || :res WHERE id = :cid"
+            "details = COALESCE(details, CAST('{}' AS jsonb)) "
+            "|| CAST(:res AS jsonb) WHERE id = :cid"
         ),
-        {
-            "cid": conflict_id,
-            "res": {"resolution": resolution, "comment": comment},
-        },
+        {"cid": conflict_id, "res": resolution_data},
     )
     await session.execute(
         text(
@@ -249,57 +325,37 @@ async def resolve_conflict_htmx(
     )
 
 
-@router.get("/reviews", response_class=HTMLResponse)
-async def reviews_list(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    tid = DEFAULT_TENANT
-    result = await session.execute(text(
-        "SELECT r.*, d.title as doc_title "
-        "FROM review_tasks r "
-        "LEFT JOIN documents d ON r.document_id = d.id "
-        "WHERE r.tenant_id = :tid "
-        "ORDER BY CASE WHEN r.status = 'new' THEN 0 ELSE 1 END, "
-        "r.created_at DESC LIMIT 100"
-    ), {"tid": tid})
-
-    return templates.TemplateResponse(
-        request, "reviews.html",
-        {"active": "reviews", "reviews": result.fetchall()},
-    )
-
-
 @router.post("/api/reviews/{review_id}/approve", response_class=HTMLResponse)
 async def approve_review_htmx(
+    request: Request,
     review_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
+
+    tid = DEFAULT_TENANT
     result = await session.execute(
-        text("SELECT id, document_id FROM review_tasks WHERE id = :rid"),
-        {"rid": review_id},
+        text(
+            "SELECT id, document_id FROM review_tasks "
+            "WHERE id = :rid AND tenant_id = :tid"
+        ),
+        {"rid": review_id, "tid": tid},
     )
     review = result.first()
     if not review:
         return HTMLResponse("<div class='text-red-600'>Not found</div>")
 
     await session.execute(
-        text(
-            "UPDATE review_tasks SET status = 'approved', "
-            "completed_at = now() WHERE id = :rid"
-        ),
+        text("UPDATE review_tasks SET status = 'approved', completed_at = now() WHERE id = :rid"),
         {"rid": review_id},
     )
     if review.document_id:
         await session.execute(
-            text(
-                "UPDATE documents SET review_status = 'published' "
-                "WHERE id = :did"
-            ),
-            {"did": review.document_id},
+            text("UPDATE documents SET review_status = 'published' WHERE id = :did AND tenant_id = :tid"),
+            {"did": review.document_id, "tid": tid},
         )
     await session.commit()
-
     return HTMLResponse(
         f'<div id="review-{review_id}" class="bg-green-50 rounded border '
         f'border-green-200 p-3 text-green-800 text-sm">Approved</div>'
@@ -308,34 +364,35 @@ async def approve_review_htmx(
 
 @router.post("/api/reviews/{review_id}/reject", response_class=HTMLResponse)
 async def reject_review_htmx(
+    request: Request,
     review_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
+
+    tid = DEFAULT_TENANT
     result = await session.execute(
-        text("SELECT id, document_id FROM review_tasks WHERE id = :rid"),
-        {"rid": review_id},
+        text(
+            "SELECT id, document_id FROM review_tasks "
+            "WHERE id = :rid AND tenant_id = :tid"
+        ),
+        {"rid": review_id, "tid": tid},
     )
     review = result.first()
     if not review:
         return HTMLResponse("<div class='text-red-600'>Not found</div>")
 
     await session.execute(
-        text(
-            "UPDATE review_tasks SET status = 'rejected', "
-            "completed_at = now() WHERE id = :rid"
-        ),
+        text("UPDATE review_tasks SET status = 'rejected', completed_at = now() WHERE id = :rid"),
         {"rid": review_id},
     )
     if review.document_id:
         await session.execute(
-            text(
-                "UPDATE documents SET review_status = 'rejected' "
-                "WHERE id = :did"
-            ),
-            {"did": review.document_id},
+            text("UPDATE documents SET review_status = 'rejected' WHERE id = :did AND tenant_id = :tid"),
+            {"did": review.document_id, "tid": tid},
         )
     await session.commit()
-
     return HTMLResponse(
         f'<div id="review-{review_id}" class="bg-red-50 rounded border '
         f'border-red-200 p-3 text-red-800 text-sm">Rejected</div>'

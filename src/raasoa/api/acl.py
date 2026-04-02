@@ -1,18 +1,14 @@
-"""ACL management endpoints.
-
-Allows setting per-document access control lists. When ACLs are set,
-retrieval filters results to only return documents the querying user
-has access to.
-"""
+"""ACL management endpoints — all tenant-scoped via auth middleware."""
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
+from raasoa.middleware.auth import resolve_tenant
 
 router = APIRouter(prefix="/v1", tags=["acl"])
 
@@ -21,7 +17,7 @@ class AclEntryRequest(BaseModel):
     document_id: uuid.UUID
     principal_type: str  # "user", "group", "role"
     principal_id: str
-    permission: str = "read"  # "read", "write", "admin"
+    permission: str = "read"
 
 
 class AclEntryResponse(BaseModel):
@@ -34,28 +30,30 @@ class AclEntryResponse(BaseModel):
 
 @router.post("/acl", response_model=AclEntryResponse)
 async def create_acl_entry(
+    request: Request,
     body: AclEntryRequest,
-    x_tenant_id: str = Header(default="00000000-0000-0000-0000-000000000001"),
     session: AsyncSession = Depends(get_session),
 ) -> AclEntryResponse:
-    """Create an ACL entry for a document."""
-    try:
-        tenant_id = uuid.UUID(x_tenant_id)
-    except ValueError as err:
-        raise HTTPException(status_code=400, detail="Invalid tenant ID") from err
+    """Create an ACL entry (tenant-scoped)."""
+    tenant_id = resolve_tenant(request)
 
-    # Verify document belongs to tenant
     doc_result = await session.execute(
-        text("SELECT id FROM documents WHERE id = :did AND tenant_id = :tid"),
+        text(
+            "SELECT id FROM documents "
+            "WHERE id = :did AND tenant_id = :tid"
+        ),
         {"did": body.document_id, "tid": tenant_id},
     )
     if not doc_result.first():
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(
+            status_code=404, detail="Document not found"
+        )
 
     entry_id = uuid.uuid4()
     await session.execute(
         text(
-            "INSERT INTO acl_entries (id, document_id, principal_type, principal_id, permission) "
+            "INSERT INTO acl_entries "
+            "(id, document_id, principal_type, principal_id, permission) "
             "VALUES (:id, :did, :ptype, :pid, :perm)"
         ),
         {
@@ -77,15 +75,34 @@ async def create_acl_entry(
     )
 
 
-@router.get("/acl/{document_id}", response_model=list[AclEntryResponse])
+@router.get(
+    "/acl/{document_id}", response_model=list[AclEntryResponse]
+)
 async def list_acl_entries(
+    request: Request,
     document_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> list[AclEntryResponse]:
-    """List ACL entries for a document."""
+    """List ACL entries for a document (tenant-scoped)."""
+    tenant_id = resolve_tenant(request)
+
+    # Verify document belongs to tenant
+    doc_result = await session.execute(
+        text(
+            "SELECT id FROM documents "
+            "WHERE id = :did AND tenant_id = :tid"
+        ),
+        {"did": document_id, "tid": tenant_id},
+    )
+    if not doc_result.first():
+        raise HTTPException(
+            status_code=404, detail="Document not found"
+        )
+
     result = await session.execute(
         text(
-            "SELECT id, document_id, principal_type, principal_id, permission "
+            "SELECT id, document_id, principal_type, "
+            "principal_id, permission "
             "FROM acl_entries WHERE document_id = :did"
         ),
         {"did": document_id},
@@ -103,15 +120,28 @@ async def list_acl_entries(
 
 @router.delete("/acl/{entry_id}")
 async def delete_acl_entry(
+    request: Request,
     entry_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Delete an ACL entry."""
+    """Delete an ACL entry (tenant-scoped)."""
+    tenant_id = resolve_tenant(request)
+
+    # Join with documents to verify tenant ownership
     result = await session.execute(
-        text("DELETE FROM acl_entries WHERE id = :eid RETURNING id"),
-        {"eid": entry_id},
+        text(
+            "DELETE FROM acl_entries a "
+            "USING documents d "
+            "WHERE a.id = :eid "
+            "AND a.document_id = d.id "
+            "AND d.tenant_id = :tid "
+            "RETURNING a.id"
+        ),
+        {"eid": entry_id, "tid": tenant_id},
     )
     if not result.first():
-        raise HTTPException(status_code=404, detail="ACL entry not found")
+        raise HTTPException(
+            status_code=404, detail="ACL entry not found"
+        )
     await session.commit()
     return {"status": "deleted", "id": str(entry_id)}

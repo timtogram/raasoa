@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     ingest_rate_limit_per_minute: int = 30
     retrieve_rate_limit_per_minute: int = 120
 
+    # Authentication
+    auth_enabled: bool = True
+    api_keys: str = ""  # comma-separated "key:tenant_id" pairs
+    webhook_secret: str = ""  # shared secret for webhook authentication
+    dashboard_password: str = ""  # password for dashboard access (empty = no dashboard auth)
+
     # Dashboard
     dashboard_enabled: bool = True
 

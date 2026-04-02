@@ -1,37 +1,21 @@
 """Webhook endpoints for external source connectors.
 
-External systems (SharePoint, Jira, Confluence, custom) can push
-document changes to RAASOA via webhooks. This enables event-driven
-ingestion without polling.
-
-Supported events:
-- document.created: New document available
-- document.updated: Existing document changed
-- document.deleted: Document removed from source
-
-Usage:
-    POST /v1/webhooks/ingest
-    {
-      "event": "document.created",
-      "source": "sharepoint",
-      "title": "Q1 Report",
-      "content": "...",
-      "source_object_id": "sp://site/lib/doc.docx",
-      "source_url": "https://company.sharepoint.com/...",
-      "metadata": {"author": "Jane", "department": "Finance"}
-    }
+Webhooks are authenticated via:
+  - API Key (same as other endpoints), OR
+  - Shared secret (X-Webhook-Secret header, configured via WEBHOOK_SECRET env)
 """
 
 import logging
-import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from raasoa.config import settings
 from raasoa.db import get_session
 from raasoa.ingestion.pipeline import ingest_file
+from raasoa.middleware.auth import resolve_tenant, verify_webhook_secret
 from raasoa.models.source import Source
 from raasoa.providers.factory import get_embedding_provider
 
@@ -41,12 +25,18 @@ router = APIRouter(prefix="/v1/webhooks", tags=["webhooks"])
 
 class WebhookPayload(BaseModel):
     event: str = Field(
-        ..., description="Event type: document.created/updated/deleted",
+        ...,
+        description="Event type: document.created/updated/deleted",
     )
-    source: str = Field(..., description="Source identifier (sharepoint, jira, confluence, custom)")
+    source: str = Field(
+        ...,
+        description="Source identifier (sharepoint, jira, notion, custom)",
+    )
     title: str | None = None
     content: str | None = None
-    source_object_id: str = Field(..., description="Unique identifier in the source system")
+    source_object_id: str = Field(
+        ..., description="Unique identifier in the source system",
+    )
     source_url: str | None = None
     metadata: dict = Field(default_factory=dict)
 
@@ -60,16 +50,26 @@ class WebhookResponse(BaseModel):
 
 @router.post("/ingest", response_model=WebhookResponse)
 async def webhook_ingest(
+    request: Request,
     payload: WebhookPayload,
-    x_tenant_id: str = Header(default="00000000-0000-0000-0000-000000000001"),
-    x_webhook_secret: str = Header(default=""),
     session: AsyncSession = Depends(get_session),
 ) -> WebhookResponse:
-    """Receive document events from external sources."""
-    try:
-        tenant_id = uuid.UUID(x_tenant_id)
-    except ValueError as err:
-        raise HTTPException(status_code=400, detail="Invalid tenant ID") from err
+    """Receive document events from external sources.
+
+    Authentication: API key OR webhook secret required.
+    """
+    # Auth: try API key first, fall back to webhook secret
+    if settings.auth_enabled:
+        try:
+            tenant_id = resolve_tenant(request)
+        except HTTPException:
+            # API key failed — try webhook secret
+            verify_webhook_secret(request)
+            # With secret-only auth, use default tenant from config
+            from raasoa.middleware.auth import DEFAULT_TENANT
+            tenant_id = DEFAULT_TENANT
+    else:
+        tenant_id = resolve_tenant(request)
 
     # Ensure source exists
     result = await session.execute(
@@ -94,32 +94,34 @@ async def webhook_ingest(
         source_id = source.id
 
     if payload.event == "document.deleted":
-        # Soft-delete the document
         result = await session.execute(
             text(
                 "UPDATE documents SET status = 'deleted', "
                 "review_status = 'rejected' "
                 "WHERE tenant_id = :tid AND source_id = :sid "
-                "AND source_object_id = :soid AND status != 'deleted'"
+                "AND source_object_id = :soid "
+                "AND status != 'deleted'"
             ),
-            {"tid": tenant_id, "sid": source_id, "soid": payload.source_object_id},
+            {
+                "tid": tenant_id,
+                "sid": source_id,
+                "soid": payload.source_object_id,
+            },
         )
         await session.commit()
-
         return WebhookResponse(
             status="processed",
             event=payload.event,
-            message=f"Document deletion processed ({result.rowcount} affected)",
+            message=f"Deletion processed ({result.rowcount} affected)",
         )
 
     if payload.event in ("document.created", "document.updated"):
         if not payload.content:
             raise HTTPException(
                 status_code=400,
-                detail="Content required for document.created/updated events",
+                detail="Content required for create/update events",
             )
 
-        # Build file data from content
         title = payload.title or payload.source_object_id
         file_content = f"# {title}\n\n{payload.content}"
         file_data = file_content.encode("utf-8")
@@ -127,7 +129,7 @@ async def webhook_ingest(
         provider = get_embedding_provider()
 
         try:
-            doc, assessment = await ingest_file(
+            doc, _assessment = await ingest_file(
                 session=session,
                 tenant_id=tenant_id,
                 source_id=source_id,
@@ -137,10 +139,12 @@ async def webhook_ingest(
             )
             await session.refresh(doc)
 
-            # Update source URL if provided
             if payload.source_url:
                 await session.execute(
-                    text("UPDATE documents SET source_url = :url WHERE id = :did"),
+                    text(
+                        "UPDATE documents SET source_url = :url "
+                        "WHERE id = :did"
+                    ),
                     {"url": payload.source_url, "did": doc.id},
                 )
                 await session.commit()
@@ -150,21 +154,22 @@ async def webhook_ingest(
                 event=payload.event,
                 document_id=str(doc.id),
                 message=(
-                    f"Document '{title}' ingested: "
-                    f"{doc.chunk_count} chunks, "
+                    f"'{title}' ingested: {doc.chunk_count} chunks, "
                     f"quality={doc.quality_score or 'N/A'}"
                 ),
             )
-
-        except Exception as e:
-            logger.exception("Webhook ingestion failed for %s", payload.source_object_id)
+        except Exception:
+            logger.exception(
+                "Webhook ingestion failed for %s",
+                payload.source_object_id,
+            )
             raise HTTPException(
                 status_code=500,
                 detail="Ingestion failed. Check server logs.",
-            ) from e
+            ) from None
 
     raise HTTPException(
         status_code=400,
-        detail=f"Unknown event type: {payload.event}. "
-        "Supported: document.created, document.updated, document.deleted",
+        detail=f"Unknown event: {payload.event}. "
+        "Supported: document.created/updated/deleted",
     )

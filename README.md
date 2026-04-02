@@ -344,13 +344,13 @@ Batch operations without Celery or Redis:
 
 ```bash
 # Batch ingest all files from a directory
-uv run python -m raasoa.worker batch ingest /path/to/documents/
+uv run python -m raasoa.worker ingest /path/to/documents/
 
 # Run maintenance (tiering sweep, cleanup)
-uv run python -m raasoa.worker batch maintenance
+uv run python -m raasoa.worker maintenance
 
 # Tiering sweep only
-uv run python -m raasoa.worker batch tiering
+uv run python -m raasoa.worker tiering
 ```
 
 ## Configuration

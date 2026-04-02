@@ -1,14 +1,15 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.config import settings
 from raasoa.db import get_session
 from raasoa.ingestion.pipeline import ingest_file
-from raasoa.middleware.rate_limit import extract_tenant_id, get_ingest_limiter
+from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.rate_limit import get_ingest_limiter
 from raasoa.models.source import Source
 from raasoa.models.tenant import Tenant
 from raasoa.providers.factory import get_embedding_provider
@@ -33,7 +34,8 @@ async def _ensure_default_tenant_and_source(
 
     result = await session.execute(
         text(
-            "SELECT id FROM sources WHERE tenant_id = :tid AND source_type = 'file_upload'"
+            "SELECT id FROM sources WHERE tenant_id = :tid "
+            "AND source_type = 'file_upload'"
         ),
         {"tid": tenant_id},
     )
@@ -56,20 +58,14 @@ async def _ensure_default_tenant_and_source(
 async def ingest_document(
     request: Request,
     file: UploadFile = File(...),
-    x_tenant_id: str = Header(default="00000000-0000-0000-0000-000000000001"),
     session: AsyncSession = Depends(get_session),
 ) -> IngestResponse:
     """Upload and ingest a document with quality assessment."""
-    # Rate limit check
-    get_ingest_limiter().check(extract_tenant_id(request))
+    tenant_id = resolve_tenant(request)
+    get_ingest_limiter().check(str(tenant_id))
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
-
-    try:
-        tenant_id = uuid.UUID(x_tenant_id)
-    except ValueError as err:
-        raise HTTPException(status_code=400, detail="Invalid tenant ID") from err
 
     file_data = await file.read()
     if not file_data:
@@ -79,10 +75,15 @@ async def ingest_document(
     if len(file_data) > max_size:
         raise HTTPException(
             status_code=413,
-            detail=f"File too large ({len(file_data)} bytes). Max: {settings.max_file_size_mb}MB",
+            detail=(
+                f"File too large ({len(file_data)} bytes). "
+                f"Max: {settings.max_file_size_mb}MB"
+            ),
         )
 
-    tenant_id, source_id = await _ensure_default_tenant_and_source(session, tenant_id)
+    tenant_id, source_id = await _ensure_default_tenant_and_source(
+        session, tenant_id
+    )
 
     provider = get_embedding_provider()
 
@@ -102,10 +103,8 @@ async def ingest_document(
             detail="Ingestion failed. Check server logs for details.",
         ) from e
 
-    # Refresh doc from DB (session may have expired after commits in pipeline)
     await session.refresh(doc)
 
-    # Build quality findings summary
     findings: list[QualityFindingSummary] = []
     if assessment:
         findings = [
