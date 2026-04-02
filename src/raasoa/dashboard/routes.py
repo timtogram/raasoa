@@ -55,6 +55,15 @@ async def dashboard_home(
     )
 
 
+@router.get("/search", response_class=HTMLResponse)
+async def search_page(request: Request) -> HTMLResponse:
+    """Search playground for testing retrieval."""
+    return templates.TemplateResponse(
+        request, "search.html",
+        {"active": "search", "tenant_id": DEFAULT_TENANT},
+    )
+
+
 @router.get("/upload", response_class=HTMLResponse)
 async def upload_page(request: Request) -> HTMLResponse:
     """File upload page with drag & drop."""
