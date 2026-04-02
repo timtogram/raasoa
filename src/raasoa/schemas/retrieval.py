@@ -27,7 +27,17 @@ class ConfidenceInfo(BaseModel):
     answerable: bool
 
 
+class StructuredAnswer(BaseModel):
+    """Response from structured (non-RAG) query."""
+    answer: str
+    data: list[dict]
+    query_type: str
+
+
 class RetrieveResponse(BaseModel):
     query: str
-    results: list[ChunkHit]
+    routed_to: str = "rag"
+    routing_reason: str = "default_rag"
+    results: list[ChunkHit] = []
+    structured: StructuredAnswer | None = None
     confidence: ConfidenceInfo

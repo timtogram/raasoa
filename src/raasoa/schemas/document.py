@@ -41,6 +41,13 @@ class DocumentWithChunks(DocumentDetail):
     chunks: list[ChunkDetail]
 
 
+class PaginatedDocuments(BaseModel):
+    """Cursor-based paginated response for document listings."""
+    items: list[DocumentSummary]
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
 class TenantInfo(BaseModel):
     id: uuid.UUID
     name: str

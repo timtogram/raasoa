@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from raasoa.api.acl import router as acl_router
 from raasoa.api.documents import router as documents_router
 from raasoa.api.health import router as health_router
 from raasoa.api.ingestion import router as ingestion_router
@@ -27,6 +28,7 @@ app.include_router(ingestion_router)
 app.include_router(retrieval_router)
 app.include_router(documents_router)
 app.include_router(quality_router)
+app.include_router(acl_router)
 app.include_router(dashboard_router)
 
 

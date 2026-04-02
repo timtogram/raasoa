@@ -1,6 +1,7 @@
+import base64
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,54 +10,97 @@ from raasoa.schemas.document import (
     ChunkDetail,
     DocumentSummary,
     DocumentWithChunks,
+    PaginatedDocuments,
 )
-
-ACTIVE_STATUSES = "('pending', 'indexed', 'active')"
 
 router = APIRouter(prefix="/v1", tags=["documents"])
 
 
-@router.get("/documents", response_model=list[DocumentSummary])
+def _encode_cursor(created_at: str, doc_id: str) -> str:
+    """Encode a cursor from created_at + id for stable keyset pagination."""
+    return base64.urlsafe_b64encode(f"{created_at}|{doc_id}".encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[str, str]:
+    """Decode cursor to (created_at, id)."""
+    decoded = base64.urlsafe_b64decode(cursor.encode()).decode()
+    parts = decoded.split("|", 1)
+    if len(parts) != 2:
+        raise ValueError("Invalid cursor format")
+    return parts[0], parts[1]
+
+
+@router.get("/documents", response_model=PaginatedDocuments)
 async def list_documents(
     x_tenant_id: str = Header(default="00000000-0000-0000-0000-000000000001"),
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor: str | None = Query(default=None, description="Cursor for pagination"),
     session: AsyncSession = Depends(get_session),
-) -> list[DocumentSummary]:
-    """List all documents for a tenant."""
+) -> PaginatedDocuments:
+    """List documents with cursor-based pagination."""
     try:
         tenant_id = uuid.UUID(x_tenant_id)
     except ValueError as err:
         raise HTTPException(status_code=400, detail="Invalid tenant ID") from err
 
-    result = await session.execute(
-        text(
+    params: dict = {"tid": tenant_id, "lim": limit + 1}
+
+    if cursor:
+        try:
+            cursor_ts, cursor_id = _decode_cursor(cursor)
+            cursor_uuid = uuid.UUID(cursor_id)
+        except (ValueError, Exception) as err:
+            raise HTTPException(status_code=400, detail="Invalid cursor") from err
+
+        sql = text(
             "SELECT id, title, source_object_id, doc_type, status, chunk_count, "
             "version, index_tier, quality_score, last_synced_at, last_embedded_at, created_at "
             "FROM documents WHERE tenant_id = :tid AND status != 'deleted' "
-            "ORDER BY created_at DESC LIMIT :lim OFFSET :off"
-        ),
-        {"tid": tenant_id, "lim": limit, "off": offset},
-    )
+            "AND (created_at, id) < (:cursor_ts::timestamptz, :cursor_id) "
+            "ORDER BY created_at DESC, id DESC LIMIT :lim"
+        )
+        params["cursor_ts"] = cursor_ts
+        params["cursor_id"] = cursor_uuid
+    else:
+        sql = text(
+            "SELECT id, title, source_object_id, doc_type, status, chunk_count, "
+            "version, index_tier, quality_score, last_synced_at, last_embedded_at, created_at "
+            "FROM documents WHERE tenant_id = :tid AND status != 'deleted' "
+            "ORDER BY created_at DESC, id DESC LIMIT :lim"
+        )
+
+    result = await session.execute(sql, params)
     rows = result.fetchall()
 
-    return [
-        DocumentSummary(
-            id=r.id,
-            title=r.title,
-            source_object_id=r.source_object_id,
-            doc_type=r.doc_type,
-            status=r.status,
-            chunk_count=r.chunk_count,
-            version=r.version,
-            index_tier=r.index_tier,
-            quality_score=r.quality_score,
-            last_synced_at=r.last_synced_at,
-            last_embedded_at=r.last_embedded_at,
-            created_at=r.created_at,
-        )
-        for r in rows
-    ]
+    has_more = len(rows) > limit
+    items = rows[:limit]
+
+    next_cursor = None
+    if has_more and items:
+        last = items[-1]
+        next_cursor = _encode_cursor(str(last.created_at), str(last.id))
+
+    return PaginatedDocuments(
+        items=[
+            DocumentSummary(
+                id=r.id,
+                title=r.title,
+                source_object_id=r.source_object_id,
+                doc_type=r.doc_type,
+                status=r.status,
+                chunk_count=r.chunk_count,
+                version=r.version,
+                index_tier=r.index_tier,
+                quality_score=r.quality_score,
+                last_synced_at=r.last_synced_at,
+                last_embedded_at=r.last_embedded_at,
+                created_at=r.created_at,
+            )
+            for r in items
+        ],
+        next_cursor=next_cursor,
+        has_more=has_more,
+    )
 
 
 @router.get("/documents/{document_id}", response_model=DocumentWithChunks)

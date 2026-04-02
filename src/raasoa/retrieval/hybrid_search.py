@@ -28,10 +28,30 @@ async def hybrid_search(
     semantic_weight: float = 1.0,
     lexical_weight: float = 1.0,
     rrf_k: int = 60,
+    principal_id: str | None = None,
 ) -> list[SearchResult]:
-    """Hybrid search combining dense vector + BM25 with Reciprocal Rank Fusion."""
+    """Hybrid search combining dense vector + BM25 with Reciprocal Rank Fusion.
 
-    sql = text("""
+    When principal_id is set, results are filtered to documents the principal
+    has access to (via acl_entries). Documents without any ACL entries are
+    accessible to everyone (open by default).
+    """
+
+    # Build ACL filter clause
+    if principal_id:
+        acl_filter = (
+            "AND (NOT EXISTS ("
+            "  SELECT 1 FROM acl_entries a2 WHERE a2.document_id = d.id"
+            ") OR EXISTS ("
+            "  SELECT 1 FROM acl_entries a WHERE a.document_id = d.id "
+            "  AND a.principal_id = :principal_id "
+            "  AND a.permission IN ('read', 'write', 'admin')"
+            "))"
+        )
+    else:
+        acl_filter = ""
+
+    sql = text(f"""
         WITH semantic AS (
             SELECT
                 c.id,
@@ -46,6 +66,7 @@ async def hybrid_search(
               AND d.status = 'indexed'
               AND d.review_status NOT IN ('quarantined', 'rejected', 'superseded')
               AND c.embedding IS NOT NULL
+              {acl_filter}
             ORDER BY c.embedding <=> :query_embedding
             LIMIT :candidate_limit
         ),
@@ -65,6 +86,7 @@ async def hybrid_search(
               AND d.status = 'indexed'
               AND d.review_status NOT IN ('quarantined', 'rejected', 'superseded')
               AND c.tsv @@ plainto_tsquery('simple', :query)
+              {acl_filter}
             ORDER BY ts_rank(c.tsv, plainto_tsquery('simple', :query)) DESC
             LIMIT :candidate_limit
         )
@@ -86,19 +108,20 @@ async def hybrid_search(
         LIMIT :top_k
     """)
 
-    result = await session.execute(
-        sql,
-        {
-            "query_embedding": str(query_embedding),
-            "query": query,
-            "tenant_id": tenant_id,
-            "candidate_limit": top_k * 3,
-            "semantic_weight": semantic_weight,
-            "lexical_weight": lexical_weight,
-            "rrf_k": rrf_k,
-            "top_k": top_k,
-        },
-    )
+    params: dict = {
+        "query_embedding": str(query_embedding),
+        "query": query,
+        "tenant_id": tenant_id,
+        "candidate_limit": top_k * 3,
+        "semantic_weight": semantic_weight,
+        "lexical_weight": lexical_weight,
+        "rrf_k": rrf_k,
+        "top_k": top_k,
+    }
+    if principal_id:
+        params["principal_id"] = principal_id
+
+    result = await session.execute(sql, params)
 
     rows = result.fetchall()
     return [
@@ -122,6 +145,7 @@ async def search(
     tenant_id: uuid.UUID,
     embedding_provider: EmbeddingProvider,
     top_k: int = 10,
+    principal_id: str | None = None,
 ) -> list[SearchResult]:
     """High-level search: embed query, then hybrid search."""
     embeddings = await embedding_provider.embed([query])
@@ -133,4 +157,5 @@ async def search(
         query_embedding=query_embedding,
         tenant_id=tenant_id,
         top_k=top_k,
+        principal_id=principal_id,
     )
