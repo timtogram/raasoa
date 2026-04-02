@@ -114,9 +114,8 @@ function uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
 
-    fetch('/v1/ingest', {
+    fetch('/dashboard/api/ingest', {
         method: 'POST',
-        headers: { 'X-Tenant-Id': '00000000-0000-0000-0000-000000000001' },
         body: formData,
     })
     .then(r => r.json())

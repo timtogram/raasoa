@@ -149,7 +149,7 @@ function doSearch(e) {
 
     const startTime = performance.now();
 
-    fetch('/v1/retrieve', {
+    fetch('/dashboard/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

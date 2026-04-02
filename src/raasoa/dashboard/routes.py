@@ -7,9 +7,10 @@ import json as _json
 import secrets
 import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -343,6 +344,173 @@ async def reviews_list(
         request, "reviews.html",
         {"active": "reviews", "reviews": result.fetchall()},
     )
+
+
+# ── Dashboard API (cookie-authed proxies) ──────────────
+
+
+@router.post("/api/ingest")
+async def dashboard_ingest_proxy(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Proxy file upload from dashboard (cookie auth)."""
+    if _check_auth(request):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"},
+        )
+
+    import uuid as _uuid
+
+    from raasoa.api.ingestion import _ensure_default_tenant_and_source
+    from raasoa.ingestion.pipeline import ingest_file
+    from raasoa.providers.factory import get_embedding_provider
+
+    form = await request.form()
+    upload = form.get("file")
+    if not upload or not hasattr(upload, "read"):
+        return JSONResponse(
+            status_code=400, content={"detail": "No file provided"},
+        )
+
+    file_data = await upload.read()  # type: ignore[union-attr]
+    filename = getattr(upload, "filename", "upload.txt") or "upload.txt"
+
+    if not file_data:
+        return JSONResponse(
+            status_code=400, content={"detail": "Empty file"},
+        )
+
+    tid = _uuid.UUID(DEFAULT_TENANT)
+    tid, source_id = await _ensure_default_tenant_and_source(session, tid)
+    provider = get_embedding_provider()
+
+    try:
+        doc, assessment = await ingest_file(
+            session=session, tenant_id=tid, source_id=source_id,
+            file_data=file_data, filename=filename,
+            embedding_provider=provider,
+        )
+        await session.refresh(doc)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Dashboard ingest failed")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Ingestion failed"},
+        )
+
+    findings = []
+    if assessment:
+        findings = [
+            {"finding_type": f.finding_type, "severity": f.severity, "details": f.details}
+            for f in assessment.findings
+        ]
+
+    return JSONResponse(content={
+        "document_id": str(doc.id),
+        "title": doc.title,
+        "status": doc.status,
+        "chunk_count": doc.chunk_count,
+        "quality_score": doc.quality_score,
+        "review_status": doc.review_status,
+        "conflict_status": doc.conflict_status,
+        "quality_findings": findings,
+    })
+
+
+@router.post("/api/search")
+async def dashboard_search_proxy(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Proxy search from dashboard (uses cookie auth, not API key).
+
+    The dashboard JS calls this instead of /v1/retrieve directly,
+    so it works with the dashboard's session cookie.
+    """
+    if _check_auth(request):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"},
+        )
+
+    import uuid as _uuid
+
+    from raasoa.providers.factory import get_embedding_provider
+    from raasoa.retrieval.confidence import compute_confidence
+    from raasoa.retrieval.factory import get_reranker
+    from raasoa.retrieval.hybrid_search import search
+    from raasoa.retrieval.query_router import QueryType, route_query
+    from raasoa.retrieval.structured import structured_query
+
+    body = await request.json()
+    query = body.get("query", "")
+    top_k = body.get("top_k", 5)
+    tid = _uuid.UUID(body.get("tenant_id", DEFAULT_TENANT))
+
+    routing = route_query(query)
+
+    result_data: dict[str, Any] = {
+        "query": query,
+        "routed_to": routing.query_type.value,
+        "routing_reason": routing.reason,
+        "results": [],
+        "structured": None,
+        "confidence": {
+            "retrieval_confidence": 0.0,
+            "source_count": 0,
+            "top_score": 0.0,
+            "answerable": False,
+        },
+    }
+
+    if routing.query_type == QueryType.STRUCTURED:
+        try:
+            sq = await structured_query(session, query, tid)
+            result_data["structured"] = {
+                "answer": sq.answer,
+                "data": sq.data,
+                "query_type": sq.query_type,
+            }
+        except Exception:
+            routing = routing.__class__(
+                query_type=QueryType.RAG, confidence=0.5,
+                reason="structured_fallback",
+            )
+            result_data["routed_to"] = "rag"
+            result_data["routing_reason"] = "structured_fallback"
+
+    if routing.query_type == QueryType.RAG:
+        provider = get_embedding_provider()
+        reranker = get_reranker()
+        search_results = await search(
+            session=session, query=query, tenant_id=tid,
+            embedding_provider=provider, top_k=top_k * 3,
+        )
+        search_results = await reranker.rerank(query, search_results, top_k)
+        confidence = compute_confidence(search_results)
+
+        result_data["results"] = [
+            {
+                "chunk_id": str(r.chunk_id),
+                "document_id": str(r.document_id),
+                "text": r.chunk_text,
+                "section_title": r.section_title,
+                "chunk_type": r.chunk_type,
+                "score": r.score,
+                "semantic_rank": r.semantic_rank,
+                "lexical_rank": r.lexical_rank,
+            }
+            for r in search_results
+        ]
+        result_data["confidence"] = {
+            "retrieval_confidence": confidence.retrieval_confidence,
+            "source_count": confidence.source_count,
+            "top_score": confidence.top_score,
+            "answerable": confidence.answerable,
+        }
+
+    return JSONResponse(content=result_data)
 
 
 # ── HTMX Mutations ─────────────────────────────────────
