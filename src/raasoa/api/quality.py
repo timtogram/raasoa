@@ -223,20 +223,21 @@ async def resolve_conflict(
             {"did": superseded_doc_id},
         )
 
-    # Mark conflict as resolved
+    # Mark conflict as resolved — store resolution info separately
+    import json as _json
+
+    resolution_data = _json.dumps({
+        "resolution": resolution,
+        "comment": body.comment,
+        "superseded_doc": str(superseded_doc_id) if superseded_doc_id else None,
+    })
     await session.execute(
         text(
             "UPDATE conflict_candidates SET status = 'resolved', "
-            "details = details || :resolution WHERE id = :cid"
+            "details = COALESCE(details, CAST('{}' AS jsonb)) || CAST(:resolution AS jsonb) "
+            "WHERE id = :cid"
         ),
-        {
-            "cid": conflict_id,
-            "resolution": {
-                "resolution": resolution,
-                "comment": body.comment,
-                "superseded_doc": str(superseded_doc_id) if superseded_doc_id else None,
-            },
-        },
+        {"cid": conflict_id, "resolution": resolution_data},
     )
 
     # Close related review tasks
