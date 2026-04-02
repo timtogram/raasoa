@@ -55,6 +55,45 @@ async def dashboard_home(
     )
 
 
+@router.get("/upload", response_class=HTMLResponse)
+async def upload_page(request: Request) -> HTMLResponse:
+    """File upload page with drag & drop."""
+    return templates.TemplateResponse(
+        request, "upload.html", {"active": "upload"},
+    )
+
+
+@router.get("/sources", response_class=HTMLResponse)
+async def sources_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Data sources and connector management page."""
+    tid = DEFAULT_TENANT
+
+    # Get active sources with document counts
+    result = await session.execute(text(
+        "SELECT s.id, s.name, s.source_type, s.connection_config, "
+        "(SELECT COUNT(*) FROM documents d WHERE d.source_id = s.id "
+        " AND d.status != 'deleted') as doc_count "
+        "FROM sources s WHERE s.tenant_id = :tid ORDER BY s.name"
+    ), {"tid": tid})
+    sources = result.fetchall()
+
+    # Determine webhook URL from request
+    webhook_url = str(request.base_url).rstrip("/")
+
+    return templates.TemplateResponse(
+        request, "sources.html",
+        {
+            "active": "sources",
+            "sources": sources,
+            "webhook_url": webhook_url,
+            "tenant_id": tid,
+        },
+    )
+
+
 @router.get("/documents", response_class=HTMLResponse)
 async def documents_list(
     request: Request,

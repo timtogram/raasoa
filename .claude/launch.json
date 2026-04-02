@@ -4,8 +4,8 @@
     {
       "name": "raasoa-api",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "uvicorn", "raasoa.main:app", "--reload", "--port", "8000"],
-      "port": 8000
+      "runtimeArgs": ["run", "uvicorn", "raasoa.main:app", "--reload", "--port", "8001"],
+      "port": 8001
     }
   ]
 }

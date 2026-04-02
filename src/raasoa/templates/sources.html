@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}Sources - RAASOA{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-2">Data Sources</h1>
+<p class="text-gray-500 mb-8">Connect external systems to automatically sync documents into your knowledge base.</p>
+
+<!-- Active Sources -->
+{% if sources %}
+<h2 class="text-lg font-semibold text-gray-900 mb-4">Active Sources</h2>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-10">
+    {% for source in sources %}
+    <div class="bg-white rounded-lg border border-gray-200 p-5">
+        <div class="flex items-center gap-3 mb-3">
+            <div class="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-sm">
+                {{ source.source_type[:2].upper() }}
+            </div>
+            <div>
+                <h3 class="font-semibold text-gray-900">{{ source.name }}</h3>
+                <p class="text-xs text-gray-500">{{ source.source_type }}</p>
+            </div>
+        </div>
+        <p class="text-sm text-gray-600">
+            {{ source.doc_count or 0 }} documents synced
+        </p>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Available Connectors -->
+<h2 class="text-lg font-semibold text-gray-900 mb-4">Available Connectors</h2>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
+
+    <!-- SharePoint -->
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+        <div class="flex items-center gap-3 mb-4">
+            <div class="w-12 h-12 rounded-lg bg-blue-100 flex items-center justify-center">
+                <svg class="w-7 h-7 text-blue-600" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                </svg>
+            </div>
+            <div>
+                <h3 class="font-semibold text-gray-900 text-lg">SharePoint</h3>
+                <p class="text-sm text-gray-500">Microsoft SharePoint Online</p>
+            </div>
+        </div>
+        <p class="text-sm text-gray-600 mb-4">
+            Sync documents from SharePoint libraries. Configure a Power Automate flow or Azure Logic App to send webhook events when documents change.
+        </p>
+        <details class="group">
+            <summary class="cursor-pointer text-sm font-medium text-indigo-600 hover:text-indigo-800">
+                Setup Instructions
+            </summary>
+            <div class="mt-3 bg-gray-50 rounded-lg p-4 text-sm text-gray-700 space-y-3">
+                <p><strong>1.</strong> In Power Automate, create a new flow triggered by "When a file is created or modified" in your SharePoint library.</p>
+                <p><strong>2.</strong> Add an HTTP action that sends a POST request to:</p>
+                <code class="block bg-gray-100 p-2 rounded text-xs break-all">{{ webhook_url }}/v1/webhooks/ingest</code>
+                <p><strong>3.</strong> Set the request body:</p>
+                <pre class="bg-gray-100 p-2 rounded text-xs overflow-x-auto">{
+  "event": "document.created",
+  "source": "sharepoint",
+  "title": "@{triggerOutputs()?['body/Name']}",
+  "content": "@{body('Get_file_content')}",
+  "source_object_id": "@{triggerOutputs()?['body/Id']}",
+  "source_url": "@{triggerOutputs()?['body/Link']}"
+}</pre>
+                <p><strong>4.</strong> Add header: <code class="bg-gray-100 px-1 rounded">X-Tenant-Id: 00000000-0000-0000-0000-000000000001</code></p>
+            </div>
+        </details>
+    </div>
+
+    <!-- Jira -->
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+        <div class="flex items-center gap-3 mb-4">
+            <div class="w-12 h-12 rounded-lg bg-blue-100 flex items-center justify-center">
+                <svg class="w-7 h-7 text-blue-700" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M11.53 2c0 2.4 1.97 4.35 4.35 4.35h1.78v1.7c0 2.4 1.94 4.34 4.34 4.35V2.84a.84.84 0 00-.84-.84h-9.63zM6.77 6.8a4.362 4.362 0 004.34 4.34h1.8v1.72a4.362 4.362 0 004.34 4.34V7.63a.84.84 0 00-.83-.83H6.77zM2 11.6c0 2.4 1.95 4.34 4.35 4.34h1.78v1.72c.01 2.39 1.95 4.34 4.34 4.34v-9.57a.84.84 0 00-.84-.83H2z"/>
+                </svg>
+            </div>
+            <div>
+                <h3 class="font-semibold text-gray-900 text-lg">Jira</h3>
+                <p class="text-sm text-gray-500">Atlassian Jira Cloud</p>
+            </div>
+        </div>
+        <p class="text-sm text-gray-600 mb-4">
+            Index Jira tickets, epics, and project documentation. Use Jira Automation rules to push issue updates to RAASOA.
+        </p>
+        <details class="group">
+            <summary class="cursor-pointer text-sm font-medium text-indigo-600 hover:text-indigo-800">
+                Setup Instructions
+            </summary>
+            <div class="mt-3 bg-gray-50 rounded-lg p-4 text-sm text-gray-700 space-y-3">
+                <p><strong>1.</strong> In Jira, go to Project Settings &rarr; Automation &rarr; Create Rule.</p>
+                <p><strong>2.</strong> Trigger: "Issue created" or "Issue updated".</p>
+                <p><strong>3.</strong> Action: "Send web request" to:</p>
+                <code class="block bg-gray-100 p-2 rounded text-xs break-all">{{ webhook_url }}/v1/webhooks/ingest</code>
+                <p><strong>4.</strong> Body (JSON):</p>
+                <pre class="bg-gray-100 p-2 rounded text-xs overflow-x-auto">{% raw %}{
+  "event": "document.updated",
+  "source": "jira",
+  "title": "{{issue.key}}: {{issue.summary}}",
+  "content": "{{issue.description}}",
+  "source_object_id": "{{issue.key}}",
+  "source_url": "{{issue.url}}"
+}{% endraw %}</pre>
+            </div>
+        </details>
+    </div>
+
+    <!-- Confluence -->
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+        <div class="flex items-center gap-3 mb-4">
+            <div class="w-12 h-12 rounded-lg bg-blue-100 flex items-center justify-center">
+                <svg class="w-7 h-7 text-blue-600" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M.87 18.257c-.248.382-.53.875-.763 1.245a.764.764 0 00.255 1.04l4.965 3.054a.764.764 0 001.058-.26c.199-.332.63-.95.9-1.36 1.487-2.226 2.987-2.07 5.577-.876l4.882 2.28a.763.763 0 001-.384l2.376-5.315a.765.765 0 00-.383-1.002l-4.786-2.196c-4.678-2.178-8.767-3.016-15.08 3.774zm22.267-12.504c.249-.39.537-.887.77-1.257a.764.764 0 00-.256-1.04L18.686.402a.765.765 0 00-1.058.26c-.196.324-.622.937-.893 1.347-1.487 2.226-2.987 2.07-5.577.876L6.31.613a.764.764 0 00-1 .384L2.927 6.31c-.15.35.01.762.384 1.003l4.786 2.196c4.678 2.178 8.767 3.016 15.04-3.756z"/>
+                </svg>
+            </div>
+            <div>
+                <h3 class="font-semibold text-gray-900 text-lg">Confluence</h3>
+                <p class="text-sm text-gray-500">Atlassian Confluence Cloud</p>
+            </div>
+        </div>
+        <p class="text-sm text-gray-600 mb-4">
+            Sync wiki pages and documentation. Use Confluence Automation to push page changes to RAASOA.
+        </p>
+        <details class="group">
+            <summary class="cursor-pointer text-sm font-medium text-indigo-600 hover:text-indigo-800">
+                Setup Instructions
+            </summary>
+            <div class="mt-3 bg-gray-50 rounded-lg p-4 text-sm text-gray-700 space-y-3">
+                <p><strong>1.</strong> In Confluence, go to Space Settings &rarr; Automation.</p>
+                <p><strong>2.</strong> Trigger: "Page published" or "Page updated".</p>
+                <p><strong>3.</strong> Action: "Send web request" to:</p>
+                <code class="block bg-gray-100 p-2 rounded text-xs break-all">{{ webhook_url }}/v1/webhooks/ingest</code>
+                <p><strong>4.</strong> Body (JSON):</p>
+                <pre class="bg-gray-100 p-2 rounded text-xs overflow-x-auto">{% raw %}{
+  "event": "document.updated",
+  "source": "confluence",
+  "title": "{{page.title}}",
+  "content": "{{page.body}}",
+  "source_object_id": "{{page.id}}",
+  "source_url": "{{page.url}}"
+}{% endraw %}</pre>
+            </div>
+        </details>
+    </div>
+
+    <!-- Custom Webhook -->
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+        <div class="flex items-center gap-3 mb-4">
+            <div class="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center">
+                <svg class="w-7 h-7 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                </svg>
+            </div>
+            <div>
+                <h3 class="font-semibold text-gray-900 text-lg">Custom Webhook</h3>
+                <p class="text-sm text-gray-500">Any HTTP-capable system</p>
+            </div>
+        </div>
+        <p class="text-sm text-gray-600 mb-4">
+            Connect any system that can send HTTP requests. Send document events to the webhook endpoint.
+        </p>
+        <details class="group" open>
+            <summary class="cursor-pointer text-sm font-medium text-indigo-600 hover:text-indigo-800">
+                Webhook Endpoint
+            </summary>
+            <div class="mt-3 bg-gray-50 rounded-lg p-4 text-sm text-gray-700 space-y-3">
+                <p><strong>Endpoint:</strong></p>
+                <code class="block bg-gray-100 p-2 rounded text-xs break-all select-all">POST {{ webhook_url }}/v1/webhooks/ingest</code>
+                <p><strong>Events:</strong> <code>document.created</code>, <code>document.updated</code>, <code>document.deleted</code></p>
+                <p><strong>Example:</strong></p>
+                <pre class="bg-gray-100 p-2 rounded text-xs overflow-x-auto">curl -X POST {{ webhook_url }}/v1/webhooks/ingest \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: {{ tenant_id }}" \
+  -d '{
+    "event": "document.created",
+    "source": "custom",
+    "title": "My Document",
+    "content": "Document text content...",
+    "source_object_id": "unique-id-123"
+  }'</pre>
+            </div>
+        </details>
+    </div>
+</div>
+
+<!-- Batch Import -->
+<div class="bg-white rounded-lg border border-gray-200 p-6 mb-8">
+    <h2 class="text-lg font-semibold text-gray-900 mb-2">Batch Import</h2>
+    <p class="text-sm text-gray-600 mb-4">
+        Import an entire directory of files at once using the CLI:
+    </p>
+    <pre class="bg-gray-50 p-4 rounded-lg text-sm overflow-x-auto"><code class="text-gray-800"># Import all files from a directory
+uv run python -m raasoa.worker batch ingest /path/to/documents/
+
+# Or use the Python SDK
+from raasoa_client import RAGClient
+client = RAGClient("{{ webhook_url }}")
+for file in Path("docs/").glob("**/*.pdf"):
+    client.ingest(file)</code></pre>
+</div>
+{% endblock %}
