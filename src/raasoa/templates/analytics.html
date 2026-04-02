@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Analytics - RAASOA{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Knowledge Quality Analytics</h1>
+
+<!-- Claim Stability -->
+<div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+    <div class="bg-white rounded-lg border border-gray-200 p-4">
+        <p class="text-sm text-gray-500">Total Claims</p>
+        <p class="text-2xl font-bold text-gray-900">{{ stability.total_claims }}</p>
+    </div>
+    <div class="bg-white rounded-lg border border-green-200 p-4">
+        <p class="text-sm text-gray-500">Active</p>
+        <p class="text-2xl font-bold text-green-600">{{ stability.active_claims }}</p>
+    </div>
+    <div class="bg-white rounded-lg border border-yellow-200 p-4">
+        <p class="text-sm text-gray-500">Superseded</p>
+        <p class="text-2xl font-bold text-yellow-600">{{ stability.superseded_claims }}</p>
+    </div>
+    <div class="bg-white rounded-lg border border-red-200 p-4">
+        <p class="text-sm text-gray-500">Rejected</p>
+        <p class="text-2xl font-bold text-red-600">{{ stability.rejected_claims }}</p>
+    </div>
+    <div class="bg-white rounded-lg border border-indigo-200 p-4">
+        <p class="text-sm text-gray-500">Stability Rate</p>
+        <p class="text-2xl font-bold text-indigo-600">{{ "%.0f"|format(stability.stability_rate * 100) }}%</p>
+    </div>
+</div>
+
+<!-- Quality by Source -->
+<h2 class="text-lg font-semibold text-gray-900 mb-4">Quality by Source</h2>
+{% if quality_by_source %}
+<div class="bg-white rounded-lg border border-gray-200 overflow-hidden mb-8">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50 border-b border-gray-200">
+            <tr>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Source</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Type</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Documents</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Avg Quality</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Min Quality</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Low Quality</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Quarantined</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in quality_by_source %}
+            <tr class="border-b border-gray-100 hover:bg-gray-50">
+                <td class="px-4 py-3 font-medium text-gray-900">{{ s.source_name }}</td>
+                <td class="px-4 py-3 text-gray-500">{{ s.source_type }}</td>
+                <td class="px-4 py-3 text-right">{{ s.document_count }}</td>
+                <td class="px-4 py-3 text-right">
+                    {% if s.avg_quality is not none %}
+                    <span class="px-2 py-0.5 rounded text-xs font-medium
+                        {% if s.avg_quality >= 0.8 %}bg-green-100 text-green-700
+                        {% elif s.avg_quality >= 0.5 %}bg-yellow-100 text-yellow-700
+                        {% else %}bg-red-100 text-red-700{% endif %}">
+                        {{ "%.0f"|format(s.avg_quality * 100) }}%
+                    </span>
+                    {% else %}-{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right">
+                    {% if s.min_quality is not none %}{{ "%.0f"|format(s.min_quality * 100) }}%{% else %}-{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right">
+                    {% if s.low_quality_count > 0 %}
+                    <span class="text-red-600 font-medium">{{ s.low_quality_count }}</span>
+                    {% else %}0{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right">
+                    {% if s.quarantined_count > 0 %}
+                    <span class="text-red-600 font-medium">{{ s.quarantined_count }}</span>
+                    {% else %}0{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-gray-500 mb-8">No sources with documents yet.</p>
+{% endif %}
+
+<!-- Contradiction Hotspots -->
+<h2 class="text-lg font-semibold text-gray-900 mb-4">Contradiction Hotspots</h2>
+<p class="text-sm text-gray-500 mb-4">Documents with the most unresolved contradictions — where knowledge is most unstable.</p>
+{% if hotspots %}
+<div class="bg-white rounded-lg border border-gray-200 overflow-hidden mb-8">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50 border-b border-gray-200">
+            <tr>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Document</th>
+                <th class="text-left px-4 py-3 font-medium text-gray-600">Source</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Total Conflicts</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Unresolved</th>
+                <th class="text-right px-4 py-3 font-medium text-gray-600">Avg Confidence</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for h in hotspots %}
+            <tr class="border-b border-gray-100 hover:bg-gray-50">
+                <td class="px-4 py-3">
+                    <a href="/dashboard/documents/{{ h.document_id }}" class="text-indigo-600 hover:text-indigo-800 font-medium">
+                        {{ h.document_title or "Untitled" }}
+                    </a>
+                </td>
+                <td class="px-4 py-3 text-gray-500">{{ h.source_name }}</td>
+                <td class="px-4 py-3 text-right">{{ h.conflict_count }}</td>
+                <td class="px-4 py-3 text-right">
+                    {% if h.unresolved_count > 0 %}
+                    <span class="px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs font-medium">{{ h.unresolved_count }}</span>
+                    {% else %}
+                    <span class="text-green-600">0</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 text-right">
+                    {% if h.avg_confidence is not none %}{{ "%.0f"|format(h.avg_confidence * 100) }}%{% else %}-{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-gray-500 mb-8">No contradictions detected yet. Upload conflicting documents to see this in action.</p>
+{% endif %}
+{% endblock %}

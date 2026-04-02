@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from raasoa.api.acl import router as acl_router
@@ -25,6 +26,15 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# CORS — allow all origins in dev, restrict in production via env
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(health_router)
 app.include_router(ingestion_router)
 app.include_router(retrieval_router)
@@ -37,10 +47,12 @@ app.include_router(dashboard_router)
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+async def global_exception_handler(
+    request: Request, exc: Exception,
+) -> JSONResponse:
     """Catch unhandled exceptions — log details, return safe message."""
     logging.getLogger("raasoa").exception(
-        "Unhandled error on %s %s", request.method, request.url.path
+        "Unhandled error on %s %s", request.method, request.url.path,
     )
     return JSONResponse(
         status_code=500,

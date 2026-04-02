@@ -137,26 +137,51 @@ async def extract_and_store_claims(
     tenant_id: uuid.UUID,
     document_id: uuid.UUID,
     chunks: list[tuple[uuid.UUID, str]],  # (chunk_id, chunk_text)
+    max_concurrent: int = 3,
 ) -> list[Claim]:
-    """Extract claims from all chunks and store them in the database."""
+    """Extract claims from all chunks and store them in the database.
+
+    Chunks are processed concurrently (up to max_concurrent) to reduce
+    total wall-clock time for multi-chunk documents.
+    """
+    import asyncio
+
+    eligible = [
+        (cid, text) for cid, text in chunks if len(text.strip()) >= 30
+    ]
+    if not eligible:
+        return []
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _extract_one(
+        chunk_id: uuid.UUID, chunk_text: str,
+    ) -> list[dict]:
+        async with semaphore:
+            raw = await extract_claims_from_text(chunk_text)
+            return [
+                {**rc, "chunk_id": chunk_id, "evidence": chunk_text[:500]}
+                for rc in raw
+            ]
+
+    tasks = [_extract_one(cid, text) for cid, text in eligible]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
     all_claims: list[Claim] = []
-
-    for chunk_id, chunk_text in chunks:
-        if len(chunk_text.strip()) < 30:
+    for result in results:
+        if isinstance(result, BaseException):
+            logger.warning("Claim extraction task failed: %s", result)
             continue
-
-        raw_claims = await extract_claims_from_text(chunk_text)
-
-        for rc in raw_claims:
+        for rc in result:
             claim = Claim(
                 tenant_id=tenant_id,
                 document_id=document_id,
-                chunk_id=chunk_id,
+                chunk_id=rc["chunk_id"],
                 subject=rc["subject"],
                 predicate=rc["predicate"],
                 object_value=rc["object_value"],
                 confidence=rc["confidence"],
-                evidence_span=chunk_text[:500],
+                evidence_span=rc["evidence"],
                 status="active",
             )
             session.add(claim)
@@ -167,6 +192,6 @@ async def extract_and_store_claims(
 
     logger.info(
         "Extracted %d claims from %d chunks for document %s",
-        len(all_claims), len(chunks), document_id,
+        len(all_claims), len(eligible), document_id,
     )
     return all_claims

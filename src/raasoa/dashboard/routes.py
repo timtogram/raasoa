@@ -232,6 +232,97 @@ async def conflicts_list(
     )
 
 
+@router.get("/analytics", response_class=HTMLResponse)
+async def analytics_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    if redir := _check_auth(request):
+        return redir
+    tid = DEFAULT_TENANT
+
+    # Quality by source
+    qbs_result = await session.execute(text(
+        "SELECT s.name as source_name, s.source_type, "
+        "COUNT(d.id) as document_count, "
+        "ROUND(AVG(d.quality_score)::numeric, 3) as avg_quality, "
+        "ROUND(MIN(d.quality_score)::numeric, 3) as min_quality, "
+        "COUNT(*) FILTER (WHERE d.quality_score < 0.5) as low_quality_count, "
+        "COUNT(*) FILTER (WHERE d.review_status = 'quarantined') as quarantined_count "
+        "FROM documents d "
+        "JOIN sources s ON d.source_id = s.id "
+        "WHERE d.tenant_id = :tid AND d.status != 'deleted' "
+        "GROUP BY s.id, s.name, s.source_type "
+        "ORDER BY avg_quality ASC NULLS LAST"
+    ), {"tid": tid})
+
+    # Contradiction hotspots
+    hotspots_result = await session.execute(text(
+        "SELECT d.title as document_title, d.id as document_id, "
+        "s.name as source_name, "
+        "COUNT(cc.id) as conflict_count, "
+        "COUNT(*) FILTER (WHERE cc.status = 'new') as unresolved_count, "
+        "ROUND(AVG(cc.confidence)::numeric, 3) as avg_confidence "
+        "FROM conflict_candidates cc "
+        "JOIN documents d ON (cc.document_a_id = d.id OR cc.document_b_id = d.id) "
+        "JOIN sources s ON d.source_id = s.id "
+        "WHERE cc.tenant_id = :tid "
+        "GROUP BY d.id, d.title, s.name "
+        "ORDER BY unresolved_count DESC, conflict_count DESC LIMIT 20"
+    ), {"tid": tid})
+
+    # Claim stability
+    stab_result = await session.execute(text(
+        "SELECT "
+        "COUNT(*) as total_claims, "
+        "COUNT(*) FILTER (WHERE c.status = 'active') as active_claims, "
+        "COUNT(*) FILTER (WHERE c.status = 'superseded') as superseded_claims, "
+        "COUNT(*) FILTER (WHERE c.status = 'rejected') as rejected_claims, "
+        "COUNT(DISTINCT c.document_id) as documents_with_claims "
+        "FROM claims c "
+        "JOIN documents d ON c.document_id = d.id "
+        "WHERE d.tenant_id = :tid"
+    ), {"tid": tid})
+    stab_row = stab_result.first()
+    total = stab_row.total_claims if stab_row else 0
+    superseded = stab_row.superseded_claims if stab_row else 0
+    stability = {
+        "total_claims": total,
+        "active_claims": stab_row.active_claims if stab_row else 0,
+        "superseded_claims": superseded,
+        "rejected_claims": stab_row.rejected_claims if stab_row else 0,
+        "stability_rate": round(1.0 - (superseded / total) if total > 0 else 1.0, 3),
+    }
+
+    qbs_rows = qbs_result.fetchall()
+    quality_by_source = [
+        {
+            "source_name": r.source_name, "source_type": r.source_type,
+            "document_count": r.document_count,
+            "avg_quality": float(r.avg_quality) if r.avg_quality else None,
+            "min_quality": float(r.min_quality) if r.min_quality else None,
+            "low_quality_count": r.low_quality_count,
+            "quarantined_count": r.quarantined_count,
+        }
+        for r in qbs_rows
+    ]
+    hotspots = [
+        {
+            "document_title": r.document_title, "document_id": str(r.document_id),
+            "source_name": r.source_name, "conflict_count": r.conflict_count,
+            "unresolved_count": r.unresolved_count,
+            "avg_confidence": float(r.avg_confidence) if r.avg_confidence else None,
+        }
+        for r in hotspots_result.fetchall()
+    ]
+
+    return templates.TemplateResponse(
+        request, "analytics.html",
+        {"active": "analytics", "quality_by_source": quality_by_source,
+         "hotspots": hotspots, "stability": stability},
+    )
+
+
 @router.get("/reviews", response_class=HTMLResponse)
 async def reviews_list(
     request: Request,

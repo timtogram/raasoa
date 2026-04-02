@@ -46,18 +46,23 @@ services:
       timeout: 5s
       retries: 5
 
-  # Pulls the embedding model on first start, then exits
+  # Pull embedding + chat models on first start, then exit
   ollama-pull:
     image: ollama/ollama:latest
     depends_on:
       ollama:
         condition: service_healthy
-    entrypoint: ["ollama", "pull", "${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama pull ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text} &&
+        ollama pull ${OLLAMA_CHAT_MODEL:-qwen3:8b} &&
+        echo "Models ready"
     environment:
       OLLAMA_HOST: http://ollama:11434
     restart: "no"
 
-  # The RAASOA API server
+  # RAASOA API — starts automatically with `docker compose up -d`
   api:
     build: .
     ports:
@@ -71,12 +76,22 @@ services:
       EMBEDDING_PROVIDER: ollama
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:8b}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      DASHBOARD_ENABLED: "true"
     depends_on:
       postgres:
         condition: service_healthy
       ollama:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   pgdata:
   miniodata:
