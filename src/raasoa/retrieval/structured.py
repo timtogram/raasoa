@@ -5,6 +5,7 @@ These bypass the vector/BM25 search and query document metadata directly.
 
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 @dataclass
 class StructuredResult:
     answer: str
-    data: list[dict]
+    data: list[dict[str, Any]]
     query_type: str
 
 
@@ -43,6 +44,8 @@ async def structured_query(
             {"tid": tenant_id},
         )
         row = result.first()
+        if row is None:
+            return StructuredResult(answer="No data", data=[], query_type="document_count")
         answer = (
             f"Total: {row.total} documents "
             f"({row.indexed} indexed, {row.quarantined} quarantined)"
@@ -69,6 +72,8 @@ async def structured_query(
             {"tid": tenant_id},
         )
         row = result.first()
+        if row is None:
+            return StructuredResult(answer="No data", data=[], query_type="quality_overview")
         return StructuredResult(
             answer=(
                 f"Average quality: {row.avg_score} "

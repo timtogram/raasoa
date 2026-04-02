@@ -87,7 +87,7 @@ def trace_span(
         yield None
 
 
-def record_metric(name: str, value: float, attributes: dict | None = None) -> None:
+def record_metric(name: str, value: float, attributes: dict[str, Any] | None = None) -> None:
     """Record a metric if OTel is available."""
     if not _otel_available:
         return

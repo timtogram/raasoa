@@ -22,6 +22,7 @@ Usage:
 import json
 import logging
 import sys
+from typing import Any
 
 import httpx
 
@@ -39,15 +40,15 @@ def _headers() -> dict[str, str]:
 # ── MCP Protocol Implementation (JSON-RPC over stdio) ──────────────
 
 
-def _make_response(msg_id: int | str | None, result: dict) -> dict:
+def _make_response(msg_id: int | str | None, result: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
 
-def _make_error(msg_id: int | str | None, code: int, message: str) -> dict:
+def _make_error(msg_id: int | str | None, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
 
 
-def _tool_definitions() -> list[dict]:
+def _tool_definitions() -> list[dict[str, Any]]:
     """Define MCP tools exposed by RAASOA."""
     return [
         {
@@ -165,7 +166,7 @@ def _tool_definitions() -> list[dict]:
     ]
 
 
-def _resource_definitions() -> list[dict]:
+def _resource_definitions() -> list[dict[str, Any]]:
     """Define MCP resources exposed by RAASOA."""
     return [
         {
@@ -183,7 +184,7 @@ def _resource_definitions() -> list[dict]:
     ]
 
 
-async def _handle_tool_call(name: str, arguments: dict) -> list[dict]:
+async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
     """Execute an MCP tool call and return content blocks."""
     async with httpx.AsyncClient(timeout=120.0) as client:
         if name == "raasoa_search":
@@ -333,7 +334,7 @@ async def _handle_tool_call(name: str, arguments: dict) -> list[dict]:
             return [{"type": "text", "text": "\n".join(lines)}]
 
         elif name == "raasoa_list_conflicts":
-            params: dict = {"limit": 20}
+            params: dict[str, Any] = {"limit": 20}
             if "status" in arguments:
                 params["status"] = arguments["status"]
 
@@ -364,7 +365,7 @@ async def _handle_tool_call(name: str, arguments: dict) -> list[dict]:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
 
 
-async def _handle_resource_read(uri: str) -> list[dict]:
+async def _handle_resource_read(uri: str) -> list[dict[str, Any]]:
     """Read an MCP resource."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         if uri == "raasoa://health":
@@ -411,7 +412,7 @@ async def _handle_resource_read(uri: str) -> list[dict]:
         return [{"uri": uri, "mimeType": "text/plain", "text": f"Unknown resource: {uri}"}]
 
 
-def _handle_message(msg: dict) -> dict | None:
+def _handle_message(msg: dict[str, Any]) -> dict[str, Any] | None:
     """Handle a single JSON-RPC message synchronously (dispatch to async)."""
     import asyncio
 

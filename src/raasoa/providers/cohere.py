@@ -51,7 +51,8 @@ class CohereEmbeddingProvider:
             )
             response.raise_for_status()
             data = response.json()
-            return data["embeddings"]["float"]
+            result: list[list[float]] = data["embeddings"]["float"]
+            return result
 
 
 class CohereRerankProvider:

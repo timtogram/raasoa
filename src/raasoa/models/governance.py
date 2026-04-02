@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import REAL, BigInteger, Boolean, DateTime, Integer, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -36,7 +37,7 @@ class IngestionRun(UUIDMixin, Base):
     documents_processed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     chunks_created: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     chunks_embedded: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    errors: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    errors: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
 
 
 class QualityFinding(UUIDMixin, Base):
@@ -45,7 +46,7 @@ class QualityFinding(UUIDMixin, Base):
     document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     finding_type: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(Text, nullable=False)
-    details: Mapped[dict | None] = mapped_column(JSONB)
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -59,7 +60,7 @@ class ConflictCandidate(UUIDMixin, Base):
     document_b_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     conflict_type: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float | None] = mapped_column(REAL)
-    details: Mapped[dict | None] = mapped_column(JSONB)
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(Text, default="new", server_default="new")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

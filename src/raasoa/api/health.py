@@ -1,3 +1,5 @@
+from typing import Any
+
 import httpx
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
@@ -10,7 +12,7 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-async def health_check(session: AsyncSession = Depends(get_session)) -> dict:
+async def health_check(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Comprehensive health check for all service dependencies."""
     # Check DB connectivity
     try:
@@ -89,7 +91,7 @@ async def health_check(session: AsyncSession = Depends(get_session)) -> dict:
 
 
 @router.get("/health/ready")
-async def readiness_check(session: AsyncSession = Depends(get_session)) -> dict:
+async def readiness_check(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Lightweight readiness probe for load balancers."""
     try:
         result = await session.execute(text("SELECT 1"))

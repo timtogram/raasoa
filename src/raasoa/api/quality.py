@@ -1,6 +1,7 @@
 import json as _json
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import text
@@ -85,7 +86,7 @@ async def list_quality_findings(
     tenant_id = resolve_tenant(request)
 
     conditions = ["d.tenant_id = :tid"]
-    params: dict = {"tid": tenant_id, "lim": limit, "off": offset}
+    params: dict[str, Any] = {"tid": tenant_id, "lim": limit, "off": offset}
 
     if severity:
         conditions.append("qf.severity = :severity")
@@ -130,7 +131,7 @@ async def list_conflicts(
     tenant_id = resolve_tenant(request)
 
     conditions = ["tenant_id = :tid"]
-    params: dict = {"tid": tenant_id, "lim": limit, "off": offset}
+    params: dict[str, Any] = {"tid": tenant_id, "lim": limit, "off": offset}
 
     if status:
         conditions.append("status = :status")
@@ -167,7 +168,7 @@ async def resolve_conflict(
     conflict_id: uuid.UUID,
     body: ConflictResolution,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     """Resolve a conflict (tenant-scoped)."""
     tenant_id = resolve_tenant(request)
 
@@ -276,7 +277,7 @@ async def list_reviews(
     tenant_id = resolve_tenant(request)
 
     conditions = ["tenant_id = :tid"]
-    params: dict = {"tid": tenant_id, "lim": limit, "off": offset}
+    params: dict[str, Any] = {"tid": tenant_id, "lim": limit, "off": offset}
 
     if status:
         conditions.append("status = :status")
@@ -313,7 +314,7 @@ async def approve_review(
     review_id: uuid.UUID,
     body: ReviewAction,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     """Approve a review task (tenant-scoped)."""
     tenant_id = resolve_tenant(request)
 
@@ -359,7 +360,7 @@ async def reject_review(
     review_id: uuid.UUID,
     body: ReviewAction,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     """Reject a review task (tenant-scoped)."""
     tenant_id = resolve_tenant(request)
 

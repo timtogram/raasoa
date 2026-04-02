@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -9,7 +10,7 @@ class QualityFindingResponse(BaseModel):
     document_id: uuid.UUID
     finding_type: str
     severity: str
-    details: dict | None
+    details: dict[str, Any] | None
     created_at: datetime
 
 
@@ -28,7 +29,7 @@ class ConflictCandidateResponse(BaseModel):
     document_b_id: uuid.UUID
     conflict_type: str
     confidence: float | None
-    details: dict | None
+    details: dict[str, Any] | None
     status: str
     created_at: datetime
 

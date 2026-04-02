@@ -6,9 +6,11 @@ from chunk text. Claims are the foundation for contradiction detection.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
+from typing import Any
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +60,7 @@ async def extract_claims_from_text(
     text: str,
     base_url: str = settings.ollama_base_url,
     model: str = settings.ollama_chat_model,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Call Ollama to extract claims from a text passage."""
     prompt = CLAIM_EXTRACTION_PROMPT.format(text=text[:4000])
 
@@ -144,7 +146,6 @@ async def extract_and_store_claims(
     Chunks are processed concurrently (up to max_concurrent) to reduce
     total wall-clock time for multi-chunk documents.
     """
-    import asyncio
 
     eligible = [
         (cid, text) for cid, text in chunks if len(text.strip()) >= 30
@@ -156,7 +157,7 @@ async def extract_and_store_claims(
 
     async def _extract_one(
         chunk_id: uuid.UUID, chunk_text: str,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         async with semaphore:
             raw = await extract_claims_from_text(chunk_text)
             return [

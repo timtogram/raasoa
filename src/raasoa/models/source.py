@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from raasoa.models.base import Base, UUIDMixin
+
+if TYPE_CHECKING:
+    from raasoa.models.document import Document
+    from raasoa.models.tenant import Tenant
 
 
 class Source(UUIDMixin, Base):
@@ -16,13 +23,13 @@ class Source(UUIDMixin, Base):
     )
     source_type: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    connection_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    tenant: Mapped["Tenant"] = relationship(back_populates="sources")  # noqa: F821
-    documents: Mapped[list["Document"]] = relationship(back_populates="source")  # noqa: F821
+    tenant: Mapped[Tenant] = relationship(back_populates="sources")  # noqa: F821
+    documents: Mapped[list[Document]] = relationship(back_populates="source")  # noqa: F821
 
 
 class SyncCursor(Base):

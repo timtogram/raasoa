@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -14,7 +15,7 @@ class ParsedDocument:
     title: str | None
     full_text: str
     sections: list[ParsedSection] = field(default_factory=list)
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def parse_text(content: str, filename: str) -> ParsedDocument:

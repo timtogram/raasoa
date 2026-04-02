@@ -1,6 +1,7 @@
 """ACL management endpoints — all tenant-scoped via auth middleware."""
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -123,7 +124,7 @@ async def delete_acl_entry(
     request: Request,
     entry_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     """Delete an ACL entry (tenant-scoped)."""
     tenant_id = resolve_tenant(request)
 

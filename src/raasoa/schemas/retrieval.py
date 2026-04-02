@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -32,7 +34,7 @@ class ConfidenceInfo(BaseModel):
 class StructuredAnswer(BaseModel):
     """Response from structured (non-RAG) query."""
     answer: str
-    data: list[dict]
+    data: list[dict[str, Any]]
     query_type: str
 
 

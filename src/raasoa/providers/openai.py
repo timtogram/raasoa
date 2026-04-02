@@ -25,6 +25,7 @@ For custom endpoints (vLLM, LiteLLM, etc.):
 """
 
 import logging
+from typing import Any
 
 import httpx
 
@@ -83,7 +84,7 @@ class OpenAIEmbeddingProvider:
         url = self._build_url()
         headers = self._build_headers()
 
-        body: dict = {"input": texts}
+        body: dict[str, Any] = {"input": texts}
         if not self._is_azure:
             body["model"] = self._model
         # Only send dimensions if not Azure (Azure uses deployment config)

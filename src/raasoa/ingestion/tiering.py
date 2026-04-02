@@ -8,6 +8,7 @@ Tiering is based on document access patterns, quality score, and explicit overri
 """
 
 import logging
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,7 +77,7 @@ async def demote_to_cold(
     logger.info("Document %s demoted to cold tier (BM25 only)", document_id)
 
 
-async def run_tiering_sweep(session: AsyncSession) -> dict:
+async def run_tiering_sweep(session: AsyncSession) -> dict[str, Any]:
     """Background job: re-evaluate tiers for all documents.
 
     Returns stats about how many documents were moved between tiers.

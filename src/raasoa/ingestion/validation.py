@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -53,7 +54,7 @@ BLOCKLIST_PATTERNS: list[re.Pattern[str]] = [
 def validate_webhook_payload(
     source: str,
     content: str | None,
-    metadata: dict,
+    metadata: dict[str, Any],
     title: str | None = None,
 ) -> ValidationResult:
     """Validate an incoming webhook payload against data contracts.

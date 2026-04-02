@@ -5,6 +5,8 @@ to answer: "Where is our knowledge most unstable?"
 """
 
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +21,7 @@ router = APIRouter(prefix="/v1/analytics", tags=["analytics"])
 async def quality_by_source(
     request: Request,
     session: AsyncSession = Depends(get_session),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Quality scores aggregated per source.
 
     Shows which data sources produce the best/worst quality content.
@@ -62,7 +64,7 @@ async def quality_by_source(
 async def contradiction_hotspots(
     request: Request,
     session: AsyncSession = Depends(get_session),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Sources and documents with the most contradictions.
 
     Answers: "Where is our knowledge most unstable?"
@@ -108,7 +110,7 @@ async def contradiction_hotspots(
 async def claim_stability(
     request: Request,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     """Claim stability overview.
 
     Shows how often claims get superseded — indicates knowledge churn.

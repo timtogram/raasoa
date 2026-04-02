@@ -14,6 +14,7 @@ This is a simple async loop — no Celery or Redis needed.
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import text
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 async def batch_ingest_directory(
     directory: str,
     tenant_id: str = "00000000-0000-0000-0000-000000000001",
-) -> dict:
+) -> dict[str, Any]:
     """Ingest all supported files from a directory.
 
     Returns a summary of results.
@@ -52,7 +53,7 @@ async def batch_ingest_directory(
     provider = get_embedding_provider()
     tid = uuid.UUID(tenant_id)
 
-    results = {
+    results: dict[str, Any] = {
         "total": len(files),
         "success": 0,
         "failed": 0,
@@ -111,13 +112,13 @@ async def batch_ingest_directory(
     return results
 
 
-async def run_maintenance() -> dict:
+async def run_maintenance() -> dict[str, Any]:
     """Run all maintenance tasks.
 
     - Tiering sweep
     - Clean up orphaned quality findings
     """
-    stats: dict = {}
+    stats: dict[str, Any] = {}
 
     async with async_session() as session:
         # 1. Tiering sweep
@@ -133,7 +134,7 @@ async def run_maintenance() -> dict:
                 ")"
             )
         )
-        stats["orphaned_findings_cleaned"] = result.rowcount
+        stats["orphaned_findings_cleaned"] = result.rowcount  # type: ignore[attr-defined]
         await session.commit()
 
     logger.info("Maintenance complete: %s", stats)

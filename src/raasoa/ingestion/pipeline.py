@@ -160,9 +160,9 @@ async def ingest_file(
     doc.last_embedded_at = now
 
     # 10. Quality Gate
-    assessment: QualityAssessment | None = None
+    final_assessment: QualityAssessment | None = None
     if settings.quality_gate_enabled:
-        assessment = await run_quality_gate(
+        final_assessment = await run_quality_gate(
             session=session,
             doc=doc,
             parsed=parsed,
@@ -170,7 +170,8 @@ async def ingest_file(
             embedded_count=embedded_count,
             chunk_hashes=chunk_hashes,
         )
-        doc.status = "quarantined" if assessment.publish_decision == "quarantined" else "indexed"
+        is_quarantined = final_assessment.publish_decision == "quarantined"
+        doc.status = "quarantined" if is_quarantined else "indexed"
     else:
         doc.status = "indexed"
         doc.review_status = "auto_published"
@@ -231,4 +232,4 @@ async def ingest_file(
             logging.getLogger(__name__).error("Claim extraction failed: %s", e)
             await session.rollback()
 
-    return doc, assessment
+    return doc, final_assessment

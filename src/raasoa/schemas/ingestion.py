@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -6,7 +7,7 @@ from pydantic import BaseModel
 class QualityFindingSummary(BaseModel):
     finding_type: str
     severity: str
-    details: dict | None = None
+    details: dict[str, Any] | None = None
 
 
 class IngestResponse(BaseModel):

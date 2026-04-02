@@ -39,7 +39,8 @@ class OllamaEmbeddingProvider:
                     json={"model": self._model, "input": texts},
                 )
                 response.raise_for_status()
-                return response.json()["embeddings"]
+                result: list[list[float]] = response.json()["embeddings"]
+                return result
             except httpx.HTTPStatusError:
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_DELAY * 2**attempt)

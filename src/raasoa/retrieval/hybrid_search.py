@@ -1,5 +1,6 @@
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,7 +109,7 @@ async def hybrid_search(
         LIMIT :top_k
     """)
 
-    params: dict = {
+    params: dict[str, Any] = {
         "query_embedding": str(query_embedding),
         "query": query,
         "tenant_id": tenant_id,

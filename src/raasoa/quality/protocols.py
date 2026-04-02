@@ -8,7 +8,7 @@ through these protocols without structural changes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from raasoa.quality.checks import FindingResult
 
@@ -34,7 +34,7 @@ class Claim:
 class QualityAssessor(Protocol):
     """AI-based quality assessment of document content."""
 
-    async def assess(self, text: str, metadata: dict) -> list[FindingResult]: ...
+    async def assess(self, text: str, metadata: dict[str, Any]) -> list[FindingResult]: ...
 
 
 class ContradictionDetector(Protocol):

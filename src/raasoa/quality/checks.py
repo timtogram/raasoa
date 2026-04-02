@@ -8,6 +8,7 @@ No database access, no async — pure functions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from raasoa.config import settings
 from raasoa.ingestion.chunker import ChunkResult
@@ -18,7 +19,7 @@ from raasoa.ingestion.parser import ParsedDocument
 class FindingResult:
     finding_type: str
     severity: str  # "critical", "warning", "info"
-    details: dict = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
     score_penalty: float = 0.0
 
 

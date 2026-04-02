@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import logging
 import re
+from typing import Any
 
 import httpx
 
@@ -43,13 +44,13 @@ async def sync_notion_pages(
     notion_token: str,
     search_query: str = "*",
     limit: int = 20,
-) -> dict:
+) -> dict[str, Any]:
     """Search Notion and sync matching pages to RAASOA.
 
     This function uses the Notion API directly. For MCP-based sync,
     use the sync_from_mcp_results function instead.
     """
-    stats = {"found": 0, "synced": 0, "skipped": 0, "failed": 0, "errors": []}
+    stats: dict[str, Any] = {"found": 0, "synced": 0, "skipped": 0, "failed": 0, "errors": []}
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         # Search Notion
@@ -130,7 +131,7 @@ async def sync_notion_pages(
     return stats
 
 
-def _extract_title(page: dict) -> str:
+def _extract_title(page: dict[str, Any]) -> str:
     """Extract title from a Notion page object."""
     props = page.get("properties", {})
     for prop in props.values():
@@ -140,7 +141,7 @@ def _extract_title(page: dict) -> str:
     return "Untitled"
 
 
-def _blocks_to_text(blocks: list[dict]) -> str:
+def _blocks_to_text(blocks: list[dict[str, Any]]) -> str:
     """Convert Notion blocks to plain text."""
     parts: list[str] = []
     for block in blocks:
@@ -202,7 +203,7 @@ async def sync_page_by_content(
     title: str,
     content: str,
     source_url: str = "",
-) -> dict:
+) -> dict[str, Any]:
     """Sync a single page to RAASOA using pre-fetched content.
 
     Use this when you already have the page content (e.g. from MCP fetch).

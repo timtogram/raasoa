@@ -1,5 +1,6 @@
 import base64
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import text
@@ -38,7 +39,7 @@ async def list_documents(
 ) -> PaginatedDocuments:
     """List documents with cursor-based pagination."""
     tenant_id = resolve_tenant(request)
-    params: dict = {"tid": tenant_id, "lim": limit + 1}
+    params: dict[str, Any] = {"tid": tenant_id, "lim": limit + 1}
 
     if cursor:
         try:
@@ -179,7 +180,7 @@ async def delete_document(
     request: Request,
     document_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     """Soft-delete a document (tenant-scoped)."""
     tenant_id = resolve_tenant(request)
 

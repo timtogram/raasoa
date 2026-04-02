@@ -6,6 +6,7 @@ Webhooks are authenticated via:
 """
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -38,7 +39,7 @@ class WebhookPayload(BaseModel):
         ..., description="Unique identifier in the source system",
     )
     source_url: str | None = None
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class WebhookResponse(BaseModel):
@@ -129,7 +130,7 @@ async def webhook_ingest(
         return WebhookResponse(
             status="processed",
             event=payload.event,
-            message=f"Deletion processed ({result.rowcount} affected)",
+            message=f"Deletion processed ({result.rowcount} affected)",  # type: ignore[attr-defined]
         )
 
     if payload.event in ("document.created", "document.updated"):

@@ -1,11 +1,19 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import REAL, DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from raasoa.models.base import Base, UUIDMixin
+
+if TYPE_CHECKING:
+    from raasoa.models.chunk import Chunk
+    from raasoa.models.source import Source
+    from raasoa.models.tenant import Tenant
 
 
 class Document(UUIDMixin, Base):
@@ -44,12 +52,12 @@ class Document(UUIDMixin, Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    tenant: Mapped["Tenant"] = relationship(back_populates="documents")  # noqa: F821
-    source: Mapped["Source"] = relationship(back_populates="documents")  # noqa: F821
-    chunks: Mapped[list["Chunk"]] = relationship(  # noqa: F821
+    tenant: Mapped[Tenant] = relationship(back_populates="documents")  # noqa: F821
+    source: Mapped[Source] = relationship(back_populates="documents")  # noqa: F821
+    chunks: Mapped[list[Chunk]] = relationship(  # noqa: F821
         back_populates="document", cascade="all, delete-orphan"
     )
-    versions: Mapped[list["DocumentVersion"]] = relationship(
+    versions: Mapped[list[DocumentVersion]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
 
@@ -70,4 +78,4 @@ class DocumentVersion(UUIDMixin, Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    document: Mapped["Document"] = relationship(back_populates="versions")
+    document: Mapped[Document] = relationship(back_populates="versions")
