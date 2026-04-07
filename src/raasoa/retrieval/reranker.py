@@ -105,15 +105,18 @@ class OllamaReranker:
                     },
                 )
                 resp.raise_for_status()
-                text = resp.json().get("response", "").strip()
-                # Extract first float from response
-                for token in text.split():
-                    try:
-                        score = float(token)
-                        return max(0.0, min(1.0, score))
-                    except ValueError:
-                        continue
-                return 0.5  # Default if no float found
+                raw = resp.json().get("response", "").strip()
+                # Strip thinking tags
+                import re as _re
+                raw = _re.sub(
+                    r"<think>.*?</think>", "", raw, flags=_re.DOTALL,
+                ).strip()
+                # Extract any float (handles "Score: 0.85", "0.7", etc.)
+                match = _re.search(r"(\d+\.?\d*)", raw)
+                if match:
+                    score = float(match.group(1))
+                    return max(0.0, min(1.0, score))
+                return 0.5
             except Exception:
                 logger.debug(
                     "Ollama rerank scoring failed", exc_info=True

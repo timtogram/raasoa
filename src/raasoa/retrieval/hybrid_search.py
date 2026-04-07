@@ -129,6 +129,14 @@ async def hybrid_search(
             ) DESC
             LIMIT :candidate_limit
         )
+        ,feedback AS (
+            SELECT chunk_id,
+                COALESCE(SUM(rating), 0) /
+                    GREATEST(COUNT(*), 1) * 0.1 AS boost
+            FROM retrieval_feedback
+            WHERE tenant_id = :tenant_id
+            GROUP BY chunk_id
+        )
         SELECT
             COALESCE(s.id, l.id) AS chunk_id,
             COALESCE(s.document_id, l.document_id) AS document_id,
@@ -137,12 +145,15 @@ async def hybrid_search(
             COALESCE(s.chunk_type, l.chunk_type) AS chunk_type,
             (
                 COALESCE(:semantic_weight * (1.0 / (:rrf_k + s.rn)), 0) +
-                COALESCE(:lexical_weight * (1.0 / (:rrf_k + l.rn)), 0)
+                COALESCE(:lexical_weight * (1.0 / (:rrf_k + l.rn)), 0) +
+                COALESCE(fb.boost, 0)
             ) AS rrf_score,
             s.rn AS semantic_rank,
             l.rn AS lexical_rank
         FROM semantic s
         FULL OUTER JOIN lexical l ON s.id = l.id
+        LEFT JOIN feedback fb
+            ON fb.chunk_id = COALESCE(s.id, l.id)
         ORDER BY rrf_score DESC
         LIMIT :top_k
     """)

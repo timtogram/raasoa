@@ -39,6 +39,10 @@ class WebhookPayload(BaseModel):
         ..., description="Unique identifier in the source system",
     )
     source_url: str | None = None
+    idempotency_key: str | None = Field(
+        default=None,
+        description="Unique key to prevent duplicate processing on retries.",
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -157,6 +157,14 @@ async def extract_and_store_claims(
     if not eligible:
         return []
 
+    # Cap at 50 chunks to prevent LLM overload on huge documents
+    if len(eligible) > 50:
+        logger.info(
+            "Capping claim extraction to 50/%d chunks for doc %s",
+            len(eligible), document_id,
+        )
+        eligible = eligible[:50]
+
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def _extract_one(
@@ -172,12 +180,23 @@ async def extract_and_store_claims(
     tasks = [_extract_one(cid, text) for cid, text in eligible]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
+    # Collect raw claims, dedup by (subject, predicate, value)
+    seen: set[tuple[str, str, str]] = set()
     all_claims: list[Claim] = []
     for result in results:
         if isinstance(result, BaseException):
             logger.warning("Claim extraction task failed: %s", result)
             continue
         for rc in result:
+            dedup_key = (
+                rc["subject"].lower().strip(),
+                rc["predicate"].lower().strip(),
+                rc["object_value"].lower().strip(),
+            )
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
             claim = Claim(
                 tenant_id=tenant_id,
                 document_id=document_id,
