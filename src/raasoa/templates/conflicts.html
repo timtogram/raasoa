@@ -1,17 +1,25 @@
 {% extends "base.html" %}
 {% block title %}Conflicts - RAASOA{% endblock %}
 {% block content %}
-<h1 class="text-2xl font-bold text-gray-900 mb-6">Conflicts & Contradictions</h1>
+<h1 class="text-2xl font-bold text-gray-900 mb-2">Conflicts & Contradictions</h1>
+<p class="text-sm text-gray-500 mb-6">Only showing conflicts with &ge;50% confidence. Lower-confidence matches are filtered out.</p>
 
-{% if not conflicts %}
+{% set real_conflicts = [] %}
+{% for c in conflicts %}
+    {% if (c.confidence or 0) >= 0.5 %}
+        {% if real_conflicts.append(c) %}{% endif %}
+    {% endif %}
+{% endfor %}
+
+{% if not real_conflicts %}
 <div class="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
-    <div class="text-green-800 font-semibold">No open conflicts</div>
-    <div class="text-green-600 text-sm mt-1">All contradictions have been resolved.</div>
+    <div class="text-green-800 font-semibold">No significant conflicts</div>
+    <div class="text-green-600 text-sm mt-1">No contradictions above 50% confidence detected.</div>
 </div>
 {% endif %}
 
 <div class="space-y-4">
-{% for c in conflicts %}
+{% for c in real_conflicts %}
 <div class="bg-white rounded-lg border p-5" id="conflict-{{ c.id }}">
     <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2">
@@ -20,7 +28,11 @@
                 {% elif c.conflict_type == 'potential_contradiction' %}bg-orange-100 text-orange-800
                 {% elif c.conflict_type == 'exact_duplicate' %}bg-purple-100 text-purple-800
                 {% else %}bg-gray-100 text-gray-800{% endif %}">
-                {{ c.conflict_type }}
+                {% if c.conflict_type == 'claim_contradiction' %}Claim Contradiction
+                {% elif c.conflict_type == 'potential_contradiction' %}Similar Content
+                {% elif c.conflict_type == 'exact_duplicate' %}Duplicate
+                {% elif c.conflict_type == 'chunk_overlap' %}Content Overlap
+                {% else %}{{ c.conflict_type }}{% endif %}
             </span>
             <span class="text-sm text-gray-500">Confidence: {{ "%.0f"|format((c.confidence or 0) * 100) }}%</span>
         </div>
@@ -28,20 +40,41 @@
     </div>
 
     {% if c.details and c.details.get('new_claim') %}
-    <div class="grid grid-cols-2 gap-4 mb-4">
-        <div class="bg-blue-50 rounded p-3">
+    {# Claim-based contradiction — show side by side #}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="bg-blue-50 rounded-lg p-4">
             <div class="text-xs text-blue-600 font-medium mb-1">Document A (newer)</div>
-            <div class="text-sm font-semibold text-gray-900">{{ c.details.new_claim.predicate }}</div>
+            <div class="text-sm font-semibold text-gray-900 mb-1">{{ c.details.new_claim.predicate }}</div>
             <div class="text-lg font-bold text-blue-700">= {{ c.details.new_claim.value }}</div>
+            {% if c.details.new_claim.get('valid_from') %}
+            <div class="text-xs text-blue-500 mt-1">Valid from: {{ c.details.new_claim.valid_from }}</div>
+            {% endif %}
             <div class="text-xs text-gray-500 mt-2 line-clamp-2">{{ c.details.new_claim.evidence[:150] }}...</div>
         </div>
-        <div class="bg-orange-50 rounded p-3">
-            <div class="text-xs text-orange-600 font-medium mb-1">Document B ({{ c.details.get('existing_doc_title', 'existing') }})</div>
-            <div class="text-sm font-semibold text-gray-900">{{ c.details.existing_claim.predicate }}</div>
+        <div class="bg-orange-50 rounded-lg p-4">
+            <div class="text-xs text-orange-600 font-medium mb-1">Document B{% if c.details.get('existing_doc_title') %} ({{ c.details.existing_doc_title }}){% endif %}</div>
+            <div class="text-sm font-semibold text-gray-900 mb-1">{{ c.details.existing_claim.predicate }}</div>
             <div class="text-lg font-bold text-orange-700">= {{ c.details.existing_claim.value }}</div>
+            {% if c.details.existing_claim.get('valid_from') %}
+            <div class="text-xs text-orange-500 mt-1">Valid from: {{ c.details.existing_claim.valid_from }}</div>
+            {% endif %}
             <div class="text-xs text-gray-500 mt-2 line-clamp-2">{{ c.details.existing_claim.evidence[:150] }}...</div>
         </div>
     </div>
+
+    {% elif c.details and c.details.get('other_doc_title') %}
+    {# Embedding-based potential contradiction — show doc titles + preview #}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="bg-blue-50 rounded-lg p-4">
+            <div class="text-xs text-blue-600 font-medium mb-1">Document A</div>
+            <div class="text-sm text-gray-700 line-clamp-3">{{ c.details.get('other_chunk_preview', '')[:200] }}...</div>
+        </div>
+        <div class="bg-orange-50 rounded-lg p-4">
+            <div class="text-xs text-orange-600 font-medium mb-1">Document B ({{ c.details.other_doc_title }})</div>
+            <div class="text-sm text-gray-500">Semantic distance: {{ "%.3f"|format(c.details.get('semantic_distance', 0)) }}</div>
+        </div>
+    </div>
+
     {% elif c.details and c.details.get('message') %}
     <p class="text-sm text-gray-700 mb-3">{{ c.details.message }}</p>
     {% endif %}
@@ -72,9 +105,19 @@
             class="px-3 py-1.5 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300">
             Both Valid
         </button>
+        <button
+            hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
+            hx-vals='{"resolution": "dismiss", "comment": "Not a real conflict"}'
+            hx-target="#conflict-{{ c.id }}"
+            hx-swap="outerHTML"
+            class="px-3 py-1.5 bg-gray-100 text-gray-500 text-xs rounded hover:bg-gray-200">
+            Dismiss
+        </button>
     </div>
     {% else %}
-    <div class="text-sm text-green-600 font-medium mt-2">Resolved: {{ c.details.get('resolution', c.status) if c.details else c.status }}</div>
+    <div class="text-sm text-green-600 font-medium mt-2">
+        Resolved: {{ c.details.get('resolution', c.status) if c.details else c.status }}
+    </div>
     {% endif %}
 </div>
 {% endfor %}
