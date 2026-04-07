@@ -6,6 +6,7 @@ Protected by password when DASHBOARD_PASSWORD is set.
 import json as _json
 import secrets
 import uuid
+import uuid as _uuid_mod
 from pathlib import Path
 from typing import Any
 
@@ -136,8 +137,11 @@ async def sources_page(
     result = await session.execute(text(
         "SELECT s.id, s.name, s.source_type, s.connection_config, "
         "(SELECT COUNT(*) FROM documents d WHERE d.source_id = s.id "
-        " AND d.status != 'deleted') as doc_count "
-        "FROM sources s WHERE s.tenant_id = :tid ORDER BY s.name"
+        " AND d.status != 'deleted') as doc_count, "
+        "sc.sync_status, sc.last_sync_at, sc.error_message "
+        "FROM sources s "
+        "LEFT JOIN sync_cursors sc ON sc.source_id = s.id "
+        "WHERE s.tenant_id = :tid ORDER BY s.name"
     ), {"tid": tid})
 
     webhook_url = str(request.base_url).rstrip("/")
@@ -347,6 +351,90 @@ async def reviews_list(
 
 
 # ── Dashboard API (cookie-authed proxies) ──────────────
+
+
+@router.post("/api/sources")
+async def dashboard_create_source(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Create a data source from dashboard."""
+    if _check_auth(request):
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    import uuid as _uuid
+
+    body = await request.json()
+    source_id = _uuid.uuid4()
+    tid = DEFAULT_TENANT
+
+    await session.execute(
+        text(
+            "INSERT INTO sources (id, tenant_id, source_type, name, connection_config) "
+            "VALUES (:id, :tid, :stype, :name, CAST(:config AS jsonb))"
+        ),
+        {
+            "id": source_id,
+            "tid": tid,
+            "stype": body.get("source_type", "custom"),
+            "name": body.get("name", "Unnamed"),
+            "config": _json.dumps(body.get("config", {})),
+        },
+    )
+    await session.commit()
+
+    return JSONResponse(content={
+        "id": str(source_id),
+        "source_type": body.get("source_type"),
+        "name": body.get("name"),
+        "status": "created",
+    })
+
+
+@router.post("/api/sources/{source_id}/sync")
+async def dashboard_sync_source(
+    request: Request,
+    source_id: _uuid_mod.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Trigger sync for a data source from dashboard."""
+    if _check_auth(request):
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    tid = DEFAULT_TENANT
+    body = await request.json()
+
+    # Get source config
+    result = await session.execute(
+        text(
+            "SELECT id, source_type, name, connection_config "
+            "FROM sources WHERE id = :sid AND tenant_id = :tid"
+        ),
+        {"sid": source_id, "tid": tid},
+    )
+    source = result.first()
+    if not source:
+        return JSONResponse(status_code=404, content={"detail": "Source not found"})
+
+    if source.source_type != "notion":
+        return JSONResponse(content={
+            "status": "unsupported",
+            "message": f"Auto-sync not available for {source.source_type}. Use webhooks.",
+        })
+
+    # Notion sync
+    from raasoa.api.sources import _sync_notion
+
+    stats = await _sync_notion(
+        session=session,
+        tenant_id=_uuid_mod.UUID(tid),
+        source_id=source_id,
+        config=source.connection_config or {},
+        query=body.get("query", "*"),
+        limit=body.get("limit", 50),
+    )
+
+    return JSONResponse(content=stats)
 
 
 @router.post("/api/ingest")

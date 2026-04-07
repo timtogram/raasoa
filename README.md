@@ -180,16 +180,24 @@ DELETE /v1/acl/{entry_id}                    # Delete ACL entry
 
 ## Source Connectors
 
-Connect via webhooks — any system that can send HTTP gets real-time sync:
+Connect data sources directly from the dashboard — no code needed:
 
 | Source | Method | Setup |
 |--------|--------|-------|
-| **SharePoint** | Power Automate → Webhook | Dashboard has step-by-step guide |
-| **Jira** | Automation Rule → Webhook | Dashboard has step-by-step guide |
-| **Confluence** | Space Automation → Webhook | Dashboard has step-by-step guide |
-| **Notion** | Python connector included | `src/raasoa/connectors/notion.py` |
-| **Custom** | Any HTTP client | `POST /v1/webhooks/ingest` |
+| **Notion** | Native connector | Dashboard → Sources → Enter token → Sync |
+| **SharePoint** | Webhook (Power Automate) | Dashboard → Sources → Create → Setup guide |
+| **Jira** | Webhook (Automation Rule) | Dashboard → Sources → Create → Setup guide |
+| **Confluence** | Webhook (Space Automation) | Dashboard → Sources → Create → Setup guide |
+| **Custom** | Webhook (any HTTP) | `POST /v1/webhooks/ingest` |
 | **Batch** | CLI | `uv run python -m raasoa.worker ingest /path/` |
+
+```bash
+# Source management API
+POST /v1/sources                    # Create source with config
+GET  /v1/sources                    # List configured sources
+POST /v1/sources/{id}/sync          # Trigger sync (Notion: auto-pull)
+DELETE /v1/sources/{id}              # Remove source
+```
 
 Data contract validation on webhooks: minimum content length, required metadata fields, status filters, content blocklist.
 
