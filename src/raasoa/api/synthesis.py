@@ -129,6 +129,28 @@ async def build_knowledge_index(
     return {"status": "built", **stats}
 
 
+@router.post("/curate")
+async def curate_knowledge(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Run the LLM-powered knowledge curation pipeline.
+
+    1. Normalize predicates (LLM merges equivalent terms)
+    2. Rebuild knowledge index (with normalized data)
+    3. Lint for issues (contradictions, gaps, stale entries)
+
+    This is the "maintenance" step — run periodically or after
+    large ingestion batches to keep the knowledge base healthy.
+    """
+    tenant_id = resolve_tenant(request)
+
+    from raasoa.quality.curator import curate
+
+    result = await curate(session, tenant_id)
+    return result
+
+
 @router.post("/compile")
 async def compile_synthesis(
     request: Request,

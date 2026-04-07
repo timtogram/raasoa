@@ -217,6 +217,19 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "raasoa_curate",
+            "description": (
+                "Run the LLM-powered knowledge curation pipeline. "
+                "Normalizes predicates (merges equivalent terms), "
+                "rebuilds the knowledge index, and audits for issues. "
+                "Run this after ingesting new documents."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
             "name": "raasoa_compile",
             "description": (
                 "Trigger knowledge compilation — the LLM reads all claims "
@@ -472,6 +485,31 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                     ),
                 }
             ]
+
+        elif name == "raasoa_curate":
+            resp = await client.post(
+                f"{BASE_URL}/v1/synthesis/curate",
+                json={},
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            norm = data.get("normalization", {})
+            idx = data.get("index", {})
+            findings = data.get("findings", [])
+            lines = [
+                "Knowledge Curation Complete:\n",
+                f"Normalization: {norm.get('normalized', 0)} claims "
+                f"normalized across {norm.get('mappings', 0)} predicate groups",
+                f"Index: {idx.get('entries', 0)} entries from "
+                f"{idx.get('claims_processed', 0)} claims",
+                f"Lint: {len(findings)} issues found",
+            ]
+            for f in findings[:5]:
+                lines.append(
+                    f"  [{f.get('type', '?')}] {f.get('description', '')}"
+                )
+            return [{"type": "text", "text": "\n".join(lines)}]
 
         elif name == "raasoa_compile":
             body: dict[str, str | None] = {}
