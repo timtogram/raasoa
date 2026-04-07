@@ -11,12 +11,14 @@ from raasoa.middleware.rate_limit import get_retrieve_limiter
 from raasoa.providers.factory import get_embedding_provider
 from raasoa.retrieval.confidence import compute_confidence
 from raasoa.retrieval.factory import get_reranker
+from raasoa.retrieval.feedback import FeedbackSignal, store_feedback
 from raasoa.retrieval.hybrid_search import search
 from raasoa.retrieval.query_router import QueryType, route_query
 from raasoa.retrieval.structured import structured_query
 from raasoa.schemas.retrieval import (
     ChunkHit,
     ConfidenceInfo,
+    FeedbackRequest,
     RetrieveRequest,
     RetrieveResponse,
     StructuredAnswer,
@@ -143,3 +145,30 @@ async def retrieve(
             answerable=False,
         ),
     )
+
+
+@router.post("/retrieve/feedback")
+async def submit_feedback(
+    http_request: Request,
+    feedback: FeedbackRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Submit feedback on a retrieval result.
+
+    Positive feedback boosts the chunk's ranking for similar future queries.
+    Negative feedback demotes it. Over time, this makes retrieval smarter.
+    """
+    tenant_id = resolve_tenant(http_request)
+    import uuid
+
+    await store_feedback(
+        session,
+        FeedbackSignal(
+            query=feedback.query,
+            chunk_id=uuid.UUID(feedback.chunk_id),
+            document_id=uuid.UUID(feedback.document_id),
+            rating=feedback.rating,
+            tenant_id=tenant_id,
+        ),
+    )
+    return {"status": "recorded"}

@@ -373,7 +373,7 @@ async def dashboard_ingest_proxy(
             status_code=400, content={"detail": "No file provided"},
         )
 
-    file_data = await upload.read()  # type: ignore[union-attr]
+    file_data = await upload.read()
     filename = getattr(upload, "filename", "upload.txt") or "upload.txt"
 
     if not file_data:

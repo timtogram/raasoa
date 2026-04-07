@@ -38,6 +38,18 @@ class StructuredAnswer(BaseModel):
     query_type: str
 
 
+class FeedbackRequest(BaseModel):
+    """Feedback on a retrieval result — makes future searches smarter."""
+
+    query: str = Field(..., min_length=1)
+    chunk_id: str = Field(..., description="ID of the chunk being rated")
+    document_id: str = Field(..., description="ID of the parent document")
+    rating: float = Field(
+        ..., ge=-1.0, le=1.0,
+        description="Rating: -1.0 (unhelpful) to 1.0 (very helpful)",
+    )
+
+
 class RetrieveResponse(BaseModel):
     query: str
     routed_to: str = "rag"

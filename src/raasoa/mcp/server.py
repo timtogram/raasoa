@@ -163,6 +163,77 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "raasoa_feedback",
+            "description": (
+                "Submit feedback on a search result. Positive feedback boosts "
+                "the chunk in future rankings, negative feedback demotes it. "
+                "Call this after using raasoa_search when a result was "
+                "particularly helpful or unhelpful."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The original search query.",
+                    },
+                    "chunk_id": {
+                        "type": "string",
+                        "description": "ID of the chunk being rated.",
+                    },
+                    "document_id": {
+                        "type": "string",
+                        "description": "ID of the parent document.",
+                    },
+                    "rating": {
+                        "type": "number",
+                        "description": (
+                            "Rating from -1.0 (unhelpful) to 1.0 (very helpful). "
+                            "Use 1.0 for spot-on results, -1.0 for irrelevant ones."
+                        ),
+                    },
+                },
+                "required": ["query", "chunk_id", "document_id", "rating"],
+            },
+        },
+        {
+            "name": "raasoa_get_synthesis",
+            "description": (
+                "Get a compiled knowledge summary for a topic. "
+                "Syntheses are LLM-generated from extracted claims — "
+                "more coherent than raw chunks for answering questions. "
+                "Topics are typically entity names like 'Company', 'HR Policy', etc."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Topic name (e.g. 'Company', 'HR Policy').",
+                    },
+                },
+                "required": ["topic"],
+            },
+        },
+        {
+            "name": "raasoa_compile",
+            "description": (
+                "Trigger knowledge compilation — the LLM reads all claims "
+                "and writes synthesized summaries per topic. "
+                "Run this after ingesting new documents to update the "
+                "compiled knowledge base."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Compile a specific topic. Omit to compile all.",
+                    },
+                },
+            },
+        },
     ]
 
 
@@ -359,6 +430,64 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                     f"    Doc B: {c['document_b_id']}\n"
                     f"    ID: {c['id']}"
                 )
+            return [{"type": "text", "text": "\n".join(lines)}]
+
+        elif name == "raasoa_feedback":
+            resp = await client.post(
+                f"{BASE_URL}/v1/retrieve/feedback",
+                json={
+                    "query": arguments["query"],
+                    "chunk_id": arguments["chunk_id"],
+                    "document_id": arguments["document_id"],
+                    "rating": arguments["rating"],
+                },
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            rating = arguments["rating"]
+            label = "positive" if rating > 0 else "negative" if rating < 0 else "neutral"
+            return [{"type": "text", "text": f"Feedback recorded ({label}, {rating})."}]
+
+        elif name == "raasoa_get_synthesis":
+            topic = arguments["topic"]
+            resp = await client.get(
+                f"{BASE_URL}/v1/synthesis/{topic}",
+                headers=_headers(),
+            )
+            if resp.status_code == 404:
+                msg = f"No synthesis for '{topic}'. Run raasoa_compile first."
+                return [{"type": "text", "text": msg}]
+            resp.raise_for_status()
+            data = resp.json()
+            return [
+                {
+                    "type": "text",
+                    "text": (
+                        f"Knowledge Synthesis: {data['topic']}\n"
+                        f"Claims: {data['claim_count']} | "
+                        f"Sources: {data['source_documents']} | "
+                        f"Confidence: {data.get('confidence', 'N/A')}\n"
+                        f"Last updated: {data.get('updated_at', '?')}\n\n"
+                        f"{data['summary']}"
+                    ),
+                }
+            ]
+
+        elif name == "raasoa_compile":
+            body: dict[str, str | None] = {}
+            if "topic" in arguments:
+                body["topic"] = arguments["topic"]
+            resp = await client.post(
+                f"{BASE_URL}/v1/synthesis/compile",
+                json=body,
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            compiled = data.get("compiled", [])
+            lines = [f"Compiled {len(compiled)} topic(s):\n"]
+            for item in compiled:
+                lines.append(f"  • {item.get('topic', '?')}: {item.get('claim_count', 0)} claims")
             return [{"type": "text", "text": "\n".join(lines)}]
 
         else:
