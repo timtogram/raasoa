@@ -1,139 +1,163 @@
 # RAASOA — Knowledge Reliability Layer
 
-**Make enterprise knowledge trustworthy, searchable, and contradiction-free.**
+**Trustworthy retrieval with quality gates, contradiction detection, and governance for enterprise knowledge.**
 
-RAASOA sits between your source systems and your AI agents. It doesn't just index documents — it ensures what comes back is accurate, consistent, and governed.
+RAASOA sits between your source systems and your AI agents. It doesn't just index documents — it ensures what comes back is accurate, consistent, and governed. No black-box RAG — full control over data quality and knowledge consistency.
 
 ```
   Source Systems          RAASOA                     Consumers
   ─────────────    ─────────────────────    ──────────────────────
-  SharePoint  ───►│ Ingest + Quality    │   │ AI Agents (MCP)    │
-  Jira        ───►│ Gate + Claim        │──►│ Chat Bots          │
-  Confluence  ───►│ Extraction +        │   │ Internal Tools     │
-  Notion      ───►│ Contradiction Mgmt  │   │ Search APIs        │
-  File Upload ───►│ + Hybrid Retrieval  │   │ Claude / Cursor    │
+  SharePoint  ───►│                     │   │ AI Agents (MCP)    │
+  Jira        ───►│  Parse + Chunk +    │   │ Chat Bots          │
+  Confluence  ───►│  Quality Gate +     │──►│ Internal Apps      │
+  Notion      ───►│  Claim Extraction + │   │ Claude / Cursor    │
+  File Upload ───►│  3-Layer Retrieval  │   │ REST API Clients   │
+  CSV / Excel ───►│                     │   │                    │
                   └─────────────────────┘   └──────────────────────┘
 ```
 
 ## What Makes RAASOA Different
 
-Most RAG systems are a vector database with an API. They index everything and hope for the best. RAASOA does four things they don't:
-
 | Capability | What It Does | Why It Matters |
 |-----------|-------------|----------------|
-| **Quality Visibility** | 7 automated checks produce a quality score (0-1) per document. Low-quality content is quarantined, not silently served. | Your agent won't cite a half-parsed PDF or an empty template page. |
+| **Quality Visibility** | 7 automated checks produce a quality score (0-1) per document. Low-quality content is quarantined. | Your agent won't cite a half-parsed PDF or an empty template. |
 | **Contradiction Management** | LLM extracts factual claims (Subject→Predicate→Value). Conflicting claims across documents are detected automatically. | When Doc A says "Power BI" and Doc B says "SAP", you know — and decide. |
-| **Human-in-the-Loop Governance** | Conflicts and quality issues create review tasks. Resolution feeds back into search — superseded docs are excluded. | A human decides which source of truth wins. The system enforces it. |
-| **Retrieval You Can Measure** | Built-in evaluation framework with nDCG, Recall, MRR, Answerability. Gold-set based, reproducible. | You can prove your retrieval is better than a naive embedding search. |
+| **Human-in-the-Loop** | Conflicts create review tasks. Resolution feeds back into search — superseded docs are excluded. | A human decides which source of truth wins. The system enforces it. |
+| **3-Layer Retrieval** | Knowledge Index (5ms) → Structured SQL (20ms) → Hybrid Search (500ms). Fastest reliable path wins. | Factual queries get instant answers; semantic queries get full RAG. |
+| **Knowledge Compilation** | LLM curates and normalizes the knowledge index. Synthesizes topic summaries from claims. | System gets smarter over time — every ingestion improves the index. |
+| **Measurable Retrieval** | Built-in eval framework: nDCG, Recall, MRR, Answerability. Gold-set based. | You can prove your retrieval quality with numbers, not guessing. |
 
-## Quickstart (5 Minutes)
+## Quickstart
 
 ```bash
-git clone https://github.com/timtogram/raasoa.git
-cd raasoa
+git clone https://github.com/timtogram/raasoa.git && cd raasoa
 cp .env.example .env
-docker compose up -d
-# Wait ~60s for Ollama to pull the embedding model
+docker compose up -d          # PostgreSQL + Ollama + API
+# Wait ~90s for Ollama to pull models, then:
 curl -X POST http://localhost:8000/v1/ingest -F file=@your-document.pdf
 ```
 
-Open the dashboard at `http://localhost:8000/dashboard` to see quality scores, upload files, and resolve contradictions.
+Dashboard: `http://localhost:8000/dashboard`
+
+## Supported Formats
+
+| Format | Parsing | Tables | Metadata |
+|--------|---------|--------|----------|
+| **PDF** | Text + table extraction | Markdown tables | Author, created, subject |
+| **DOCX** | Paragraphs + headings + styles | Tables → markdown | Author, title |
+| **XLSX** | Multi-sheet, all rows | Per-sheet markdown | Sheet names, row count |
+| **PPTX** | Slides + speaker notes | Shape tables | Slide count |
+| **CSV/TSV** | Rows as key:value + table | Full markdown table | Headers, row/col count |
+| **HTML** | Tag stripping, structure preserved | — | — |
+| **TXT/MD** | Direct | — | — |
+
+Tables are rendered as markdown so chunks and claim extraction understand tabular data.
 
 ## How It Works
 
-### 1. Ingest → Quality Gate → Claim Extraction
+### Ingestion Pipeline
 
-Every document passes through:
-1. **Parse** (PDF, DOCX, TXT, MD)
-2. **Chunk** (recursive, 512 tokens, 80 overlap)
-3. **Embed** (Ollama / OpenAI / Cohere — your choice)
-4. **Quality Gate** — 7 checks, score 0-1, auto-quarantine if bad
+```
+File/Webhook → Parse → Chunk → Embed → Quality Gate → Claims → Contradictions → Index
+```
+
+1. **Parse** — extract text, tables, metadata from any supported format
+2. **Chunk** — recursive splitting, 512 tokens, 80 overlap
+3. **Embed** — Ollama (local), OpenAI, Azure OpenAI, Cohere, or custom endpoint
+4. **Quality Gate** — 7 checks → score 0-1 → quarantine if bad
 5. **Claim Extraction** — LLM extracts factual claims as structured triples
-6. **Contradiction Detection** — new claims checked against existing knowledge
+6. **Contradiction Detection** — new claims vs existing knowledge
+7. **Knowledge Index** — auto-rebuilt after every ingestion
+8. **Data Contract Validation** — webhooks are validated before processing (min length, required fields, blocklist patterns)
 
-### 2. Contradiction Detection
+### 3-Layer Retrieval
+
+Every query passes through three layers — fastest reliable answer wins:
 
 ```
-Doc A: "Our primary visualization tool is Power BI"
-  → Claim: (Organization, primary visualization tool, Power BI)
-
-Doc B: "Our central data visualization uses SAP Analytics Cloud"
-  → Claim: (Organization, primary visualization tool, SAP Analytics Cloud)
-
-→ Conflict detected (confidence: 89%)
-→ Review task created
-→ Human decides: "Doc B is current. Doc A is superseded."
-→ Doc A excluded from all future search results.
+Query: "What's our primary BI tool?"
+  │
+  ├─ Layer 1: Knowledge Index    (< 5ms,  100% confidence)
+  │  → "SAP Analytics Cloud"     ← direct lookup, no embedding
+  │
+  ├─ Layer 2: Structured SQL     (< 20ms)
+  │  → For "how many documents?" style queries
+  │
+  └─ Layer 3: Hybrid Search      (200-800ms)
+     → Dense + BM25 + Reciprocal Rank Fusion
+     → For semantic/conceptual queries
 ```
 
-### 3. Hybrid Search with Query Routing
+All three results come back in one response — the consuming agent picks the best.
 
-Queries are routed to the best strategy:
+### Knowledge Compilation
 
-- **RAG queries** ("How does X work?") → Dense vectors + BM25 + Reciprocal Rank Fusion
-- **Structured queries** ("How many documents?") → Direct SQL on metadata
-- **ACL-filtered** — only documents the user has access to
+Inspired by Karpathy's "LLM as knowledge compiler":
 
-### 4. Retrieval Evaluation
+- **Claim Extraction** — LLM reads chunks, extracts Subject→Predicate→Value triples
+- **Knowledge Index** — materialized lookup from normalized claims, rebuilt after every ingestion
+- **LLM Curator** — periodically normalizes predicates, merges equivalents, flags inconsistencies
+- **Topic Synthesis** — LLM compiles claims per topic into coherent summaries
+- **Retrieval Feedback** — search result ratings improve future rankings
+
+The system gets smarter with every document ingested and every query answered.
+
+## API Reference
+
+### Core
 
 ```bash
-uv run python -m raasoa.eval.runner --gold-set eval/gold_set.json
+# Ingest (tenant derived from API key)
+POST /v1/ingest                              # File upload
+POST /v1/webhooks/ingest                     # Webhook (SharePoint, Jira, etc.)
+
+# Retrieve (3-layer: index → structured → hybrid)
+POST /v1/retrieve                            # {"query": "...", "top_k": 5}
+POST /v1/retrieve/feedback                   # Rate results for learning
+
+# Documents
+GET  /v1/documents                           # Cursor-paginated list
+GET  /v1/documents/{id}                      # Detail with chunks
+DELETE /v1/documents/{id}                    # Soft delete
 ```
 
-```
-RAASOA Retrieval Evaluation Report
-============================================================
-  Queries evaluated:  7
-  Mean nDCG@k:        0.847
-  Mean Recall@k:      0.920
-  Mean Precision@k:   0.680
-  Mean MRR:           0.905
-  Answerability:      100%
-============================================================
-```
-
-## API
+### Quality & Governance
 
 ```bash
-# Ingest a document
-curl -X POST /v1/ingest -F file=@doc.pdf -H "Authorization: Bearer sk-key"
-
-# Search (tenant derived from API key, not settable by client)
-curl -X POST /v1/retrieve -d '{"query": "...", "top_k": 5}'
-
-# List documents (cursor-paginated)
-curl /v1/documents
-
-# Quality report
-curl /v1/documents/{id}/quality
-
-# Conflicts
-curl /v1/conflicts
-curl -X POST /v1/conflicts/{id}/resolve -d '{"resolution": "keep_a"}'
-
-# Analytics
-curl /v1/analytics/quality-by-source
-curl /v1/analytics/contradiction-hotspots
-curl /v1/analytics/claim-stability
-
-# Webhook (for source connectors)
-curl -X POST /v1/webhooks/ingest -H "X-Webhook-Secret: whsec-xxx" \
-  -d '{"event": "document.created", "source": "notion", ...}'
+GET  /v1/documents/{id}/quality              # Quality report
+GET  /v1/quality/findings                    # All findings
+GET  /v1/conflicts                           # Detected contradictions
+POST /v1/conflicts/{id}/resolve              # keep_a / keep_b / keep_both
+GET  /v1/reviews                             # Review tasks
+POST /v1/reviews/{id}/approve                # Approve
+POST /v1/reviews/{id}/reject                 # Reject
 ```
 
-## Dashboard
+### Knowledge Compilation
 
-Upload files, test search, view quality, resolve contradictions — all in the browser.
+```bash
+GET  /v1/synthesis                           # List topic summaries
+GET  /v1/synthesis/{topic}                   # Get synthesis for topic
+POST /v1/synthesis/compile                   # Trigger LLM compilation
+POST /v1/synthesis/build-index               # Rebuild knowledge index
+POST /v1/synthesis/curate                    # Full LLM curation pipeline
+```
 
-| Page | What It Shows |
-|------|---------------|
-| **Overview** | Document count, avg quality, open conflicts, pending reviews |
-| **Upload** | Drag & drop file upload with live quality feedback |
-| **Search** | Live search playground with routing info and confidence |
-| **Sources** | Connected data sources with setup guides |
-| **Documents** | All documents with quality scores and conflict status |
-| **Conflicts** | Contradictions with inline resolution (Keep A / Keep B / Both Valid) |
-| **Reviews** | Review tasks with approve/reject |
+### Analytics
+
+```bash
+GET  /v1/analytics/quality-by-source         # Quality per data source
+GET  /v1/analytics/contradiction-hotspots    # Most unstable knowledge
+GET  /v1/analytics/claim-stability           # Claim churn rate
+```
+
+### ACL
+
+```bash
+POST /v1/acl                                 # Create ACL entry
+GET  /v1/acl/{document_id}                   # List ACL entries
+DELETE /v1/acl/{entry_id}                    # Delete ACL entry
+```
 
 ## MCP Server (AI Agent Integration)
 
@@ -149,29 +173,62 @@ Upload files, test search, view quality, resolve contradictions — all in the b
 }
 ```
 
-Tools: `raasoa_search`, `raasoa_ingest`, `raasoa_list_documents`, `raasoa_quality_report`, `raasoa_list_conflicts`
+**10 Tools:**
+`raasoa_search`, `raasoa_ingest`, `raasoa_list_documents`, `raasoa_get_document`, `raasoa_quality_report`, `raasoa_list_conflicts`, `raasoa_feedback`, `raasoa_get_synthesis`, `raasoa_compile`, `raasoa_curate`
+
+## Source Connectors
+
+Connect via webhooks — any system that can send HTTP gets real-time sync:
+
+| Source | Method | Setup |
+|--------|--------|-------|
+| **SharePoint** | Power Automate → Webhook | Dashboard has step-by-step guide |
+| **Jira** | Automation Rule → Webhook | Dashboard has step-by-step guide |
+| **Confluence** | Space Automation → Webhook | Dashboard has step-by-step guide |
+| **Notion** | Python connector included | `src/raasoa/connectors/notion.py` |
+| **Custom** | Any HTTP client | `POST /v1/webhooks/ingest` |
+| **Batch** | CLI | `uv run python -m raasoa.worker ingest /path/` |
+
+Data contract validation on webhooks: minimum content length, required metadata fields, status filters, content blocklist.
+
+## Embedding Providers
+
+Switch with one environment variable — all local-first, cloud optional:
+
+| Provider | Config | Use Case |
+|----------|--------|----------|
+| **Ollama** (default) | `EMBEDDING_PROVIDER=ollama` | Local, air-gapped, full control |
+| **OpenAI** | `EMBEDDING_PROVIDER=openai` | Cloud, high quality |
+| **Azure OpenAI** | `OPENAI_BASE_URL=https://xxx.openai.azure.com/` | Enterprise cloud |
+| **Cohere** | `EMBEDDING_PROVIDER=cohere` | Alternative cloud |
+| **Custom** | `OPENAI_BASE_URL=http://your-server/v1` | Any OpenAI-compatible endpoint |
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTH_ENABLED` | `true` | Enable API key authentication |
-| `API_KEYS` | — | `"key:tenant-uuid"` pairs (comma-separated) |
-| `WEBHOOK_SECRET` | — | Shared secret for webhook auth |
+| `AUTH_ENABLED` | `true` | API key authentication |
+| `API_KEYS` | — | `"key:tenant-uuid"` pairs |
+| `WEBHOOK_SECRET` | — | Shared secret for webhooks |
 | `DASHBOARD_PASSWORD` | — | Dashboard login password |
-| `EMBEDDING_PROVIDER` | `ollama` | `ollama`, `openai`, or `cohere` |
-| `QUALITY_GATE_ENABLED` | `true` | Enable quality scoring |
-| `CLAIM_EXTRACTION_ENABLED` | `true` | Enable LLM claim extraction |
-| `CONFLICT_DETECTION_ENABLED` | `true` | Enable contradiction detection |
+| `EMBEDDING_PROVIDER` | `ollama` | `ollama` / `openai` / `cohere` |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Custom/Azure endpoint |
+| `QUALITY_GATE_ENABLED` | `true` | Quality scoring |
+| `CLAIM_EXTRACTION_ENABLED` | `true` | LLM claim extraction |
+| `CONFLICT_DETECTION_ENABLED` | `true` | Contradiction detection |
+| `RERANKER` | `passthrough` | `passthrough` / `ollama` |
+| `MAX_FILE_SIZE_MB` | `100` | Upload size limit |
 
 Full list in `.env.example`.
 
 ## Architecture
 
-- **Single database**: PostgreSQL with pgvector + tsvector. No Redis, no Elasticsearch.
-- **Model agnostic**: Swap embedding providers with one env variable.
-- **Tenant isolation**: Every query is scoped to the authenticated tenant.
+- **Single database**: PostgreSQL + pgvector + tsvector. No Redis, no Elasticsearch.
+- **Local-first**: Default runs entirely on your machine (Ollama + PostgreSQL).
+- **Model agnostic**: Swap providers with one env variable.
+- **Tenant isolation**: Every query scoped to the authenticated tenant.
 - **Content-hash dedup**: Re-ingesting unchanged documents is a no-op.
+- **Auto-curation**: Knowledge index rebuilds after every ingestion.
 
 ## Development
 
@@ -180,8 +237,9 @@ uv sync --extra dev --extra parsing
 docker compose up -d postgres
 uv run alembic upgrade head
 uv run uvicorn raasoa.main:app --reload --port 8000
-uv run pytest -v            # 124 tests
-uv run ruff check src/      # 0 errors
+uv run pytest -v                # 145 tests
+uv run ruff check src/          # 0 errors
+uv run mypy src/raasoa           # 0 errors
 ```
 
 ## License
