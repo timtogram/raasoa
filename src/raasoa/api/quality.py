@@ -253,6 +253,12 @@ async def resolve_conflict(
         {"cid": conflict_id},
     )
 
+    from raasoa.middleware.audit import audit
+    await audit(
+        session, tenant_id, request, "conflict.resolve",
+        "conflict", str(conflict_id),
+        {"resolution": resolution, "superseded": str(superseded_doc_id)},
+    )
     await session.commit()
     return {
         "status": "resolved",

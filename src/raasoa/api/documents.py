@@ -208,5 +208,10 @@ async def delete_document(
         ),
         {"did": document_id},
     )
+    from raasoa.middleware.audit import audit
+    await audit(
+        session, tenant_id, request, "document.delete",
+        "document", str(document_id),
+    )
     await session.commit()
     return {"status": "deleted", "document_id": str(document_id)}

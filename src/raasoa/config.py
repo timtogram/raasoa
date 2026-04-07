@@ -6,6 +6,8 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://raasoa:raasoa_dev@localhost:5433/raasoa"
+    db_pool_size: int = 20
+    db_max_overflow: int = 30
 
     # Object Storage
     s3_endpoint_url: str = "http://localhost:9000"

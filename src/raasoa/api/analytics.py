@@ -17,6 +17,52 @@ from raasoa.middleware.auth import resolve_tenant
 router = APIRouter(prefix="/v1/analytics", tags=["analytics"])
 
 
+@router.get("/audit")
+async def audit_log(
+    request: Request,
+    action: str | None = None,
+    resource_type: str | None = None,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Query the audit log. Filterable by action and resource type."""
+    tenant_id = resolve_tenant(request)
+
+    conditions = ["tenant_id = :tid"]
+    params: dict[str, Any] = {"tid": tenant_id, "lim": limit}
+
+    if action:
+        conditions.append("action = :action")
+        params["action"] = action
+    if resource_type:
+        conditions.append("resource_type = :rtype")
+        params["rtype"] = resource_type
+
+    where = " AND ".join(conditions)
+    result = await session.execute(
+        text(
+            f"SELECT id, actor, action, resource_type, resource_id, "
+            f"details, ip_address, created_at "
+            f"FROM audit_events WHERE {where} "
+            f"ORDER BY created_at DESC LIMIT :lim"
+        ),
+        params,
+    )
+    return [
+        {
+            "id": str(r.id),
+            "actor": r.actor,
+            "action": r.action,
+            "resource_type": r.resource_type,
+            "resource_id": r.resource_id,
+            "details": r.details,
+            "ip_address": r.ip_address,
+            "created_at": str(r.created_at),
+        }
+        for r in result.fetchall()
+    ]
+
+
 @router.get("/quality-by-source")
 async def quality_by_source(
     request: Request,

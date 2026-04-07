@@ -191,6 +191,11 @@ async def sync_source(
                 session, tenant_id, source_id, config,
                 body.query, body.limit,
             )
+        elif source.source_type == "sharepoint":
+            stats = await _sync_sharepoint(
+                session, tenant_id, source_id, config,
+                body.query, body.limit,
+            )
         else:
             stats = {
                 "status": "unsupported",
@@ -325,6 +330,141 @@ async def _sync_notion(
 
             except Exception as e:
                 stats["errors"].append({"page": title, "error": str(e)[:200]})
+
+    return stats
+
+
+async def _sync_sharepoint(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    source_id: uuid.UUID,
+    config: dict[str, Any],
+    query: str,
+    limit: int,
+) -> dict[str, Any]:
+    """Sync documents from SharePoint via Microsoft Graph API.
+
+    Config requires:
+    - tenant_id_azure: Azure AD tenant ID
+    - client_id: App registration client ID
+    - client_secret: App registration secret
+    - site_id: SharePoint site ID (or site URL)
+    - drive_id: Optional — specific document library
+    """
+    import httpx
+
+    az_tenant = config.get("tenant_id_azure", "")
+    client_id = config.get("client_id", "")
+    client_secret = config.get("client_secret", "")
+    site_id = config.get("site_id", "")
+
+    if not all([az_tenant, client_id, client_secret, site_id]):
+        return {
+            "status": "error",
+            "message": "Missing SharePoint config. Required: "
+            "tenant_id_azure, client_id, client_secret, site_id",
+        }
+
+    stats: dict[str, Any] = {
+        "found": 0, "synced": 0, "skipped": 0, "errors": [],
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # Get OAuth token
+        token_resp = await client.post(
+            f"https://login.microsoftonline.com/{az_tenant}/oauth2/v2.0/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://graph.microsoft.com/.default",
+            },
+        )
+        if token_resp.status_code != 200:
+            return {
+                "status": "error",
+                "message": f"Azure OAuth failed: {token_resp.status_code}",
+            }
+
+        access_token = token_resp.json().get("access_token", "")
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Search for documents in the site
+        search_url = (
+            f"https://graph.microsoft.com/v1.0/sites/{site_id}"
+            f"/drive/root/search(q='{query}')"
+        )
+        resp = await client.get(
+            search_url,
+            headers=headers,
+            params={"$top": limit},
+        )
+        if resp.status_code != 200:
+            return {
+                "status": "error",
+                "message": f"Graph API error: {resp.status_code}",
+            }
+
+        items = resp.json().get("value", [])
+        stats["found"] = len(items)
+
+        from raasoa.ingestion.pipeline import ingest_file
+        from raasoa.providers.factory import get_embedding_provider
+
+        provider = get_embedding_provider()
+
+        for item in items:
+            name = item.get("name", "")
+            item_id = item.get("id", "")
+
+            # Only process supported file types
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            if ext not in (
+                "pdf", "docx", "xlsx", "pptx", "txt", "md", "csv",
+            ):
+                stats["skipped"] += 1
+                continue
+
+            # Download file content
+            try:
+                dl_url = (
+                    f"https://graph.microsoft.com/v1.0/sites/{site_id}"
+                    f"/drive/items/{item_id}/content"
+                )
+                dl_resp = await client.get(dl_url, headers=headers)
+                dl_resp.raise_for_status()
+                file_data = dl_resp.content
+
+                doc, _ = await ingest_file(
+                    session=session,
+                    tenant_id=tenant_id,
+                    source_id=source_id,
+                    file_data=file_data,
+                    filename=name,
+                    embedding_provider=provider,
+                )
+                await session.refresh(doc)
+
+                web_url = item.get("webUrl", "")
+                if web_url:
+                    await session.execute(
+                        text(
+                            "UPDATE documents SET source_url = :url "
+                            "WHERE id = :did"
+                        ),
+                        {"url": web_url, "did": doc.id},
+                    )
+                await session.commit()
+
+                stats["synced"] += 1
+                logger.info(
+                    "Synced SharePoint: %s (%d chunks)",
+                    name, doc.chunk_count,
+                )
+            except Exception as e:
+                stats["errors"].append(
+                    {"file": name, "error": str(e)[:200]},
+                )
 
     return stats
 

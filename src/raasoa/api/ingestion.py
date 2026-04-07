@@ -105,6 +105,15 @@ async def ingest_document(
 
     await session.refresh(doc)
 
+    # Audit log
+    from raasoa.middleware.audit import audit
+    await audit(
+        session, tenant_id, request, "document.ingest",
+        "document", str(doc.id),
+        {"title": doc.title, "chunks": doc.chunk_count,
+         "quality": doc.quality_score},
+    )
+
     findings: list[QualityFindingSummary] = []
     if assessment:
         findings = [

@@ -232,7 +232,7 @@ async def ingest_file(
             logging.getLogger(__name__).error("Claim extraction failed: %s", e)
             await session.rollback()
 
-    # 13. Auto-curate: rebuild knowledge index after claim extraction
+    # 13. Auto-curate: rebuild index + enqueue full curation job
     if settings.claim_extraction_enabled:
         try:
             from raasoa.retrieval.knowledge_index import build_index
@@ -243,5 +243,14 @@ async def ingest_file(
             logging.getLogger(__name__).debug(
                 "Auto index rebuild failed", exc_info=True,
             )
+
+        # Enqueue async curation (normalize predicates, lint)
+        try:
+            from raasoa.worker.queue import enqueue
+
+            await enqueue(session, tenant_id, "curate", priority=-1)
+            await session.commit()
+        except Exception:
+            pass  # Queue is best-effort
 
     return doc, final_assessment
