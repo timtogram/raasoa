@@ -8,8 +8,15 @@ class RetrieveRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=50)
     principal_id: str | None = Field(
         default=None,
-        description="User/group ID for ACL filtering. "
-        "Only documents accessible to this principal are returned.",
+        description="User/group ID for ACL filtering.",
+    )
+    source_type: str | None = Field(
+        default=None,
+        description="Pre-filter by source type (e.g. 'sharepoint', 'jira', 'notion').",
+    )
+    doc_type: str | None = Field(
+        default=None,
+        description="Pre-filter by document type (e.g. 'pdf', 'policy').",
     )
 
 
@@ -58,6 +65,8 @@ class IndexHit(BaseModel):
     value: str
     confidence: float
     source_documents: list[str] = []
+    valid_from: str | None = None
+    valid_until: str | None = None
 
 
 class RetrieveResponse(BaseModel):

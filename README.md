@@ -70,9 +70,10 @@ File/Webhook → Parse → Chunk → Embed → Quality Gate → Claims → Contr
 7. **Knowledge Index** — auto-rebuilt after every ingestion
 8. **Data Contract Validation** — webhooks are validated before processing (min length, required fields, blocklist patterns)
 
-### 3-Layer Retrieval
+### 3-Layer Retrieval with Source Pre-Filtering
 
-Every query passes through three layers — fastest reliable answer wins:
+Every query passes through three layers — fastest reliable answer wins.
+Optionally pre-filter by `source_type` or `doc_type` for targeted search:
 
 ```
 Query: "What's our primary BI tool?"
@@ -94,7 +95,7 @@ All three results come back in one response — the consuming agent picks the be
 
 Inspired by Karpathy's "LLM as knowledge compiler":
 
-- **Claim Extraction** — LLM reads chunks, extracts Subject→Predicate→Value triples
+- **Claim Extraction** — LLM reads chunks, extracts Subject→Predicate→Value triples with temporal validity (valid_from/valid_until)
 - **Knowledge Index** — materialized lookup from normalized claims, rebuilt after every ingestion
 - **LLM Curator** — periodically normalizes predicates, merges equivalents, flags inconsistencies
 - **Topic Synthesis** — LLM compiles claims per topic into coherent summaries
@@ -113,6 +114,7 @@ POST /v1/webhooks/ingest                     # Webhook (SharePoint, Jira, etc.)
 
 # Retrieve (3-layer: index → structured → hybrid)
 POST /v1/retrieve                            # {"query": "...", "top_k": 5}
+# Optional: "source_type": "sharepoint", "doc_type": "pdf"
 POST /v1/retrieve/feedback                   # Rate results for learning
 
 # Documents

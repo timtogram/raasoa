@@ -30,6 +30,8 @@ A claim has exactly these fields:
   BAD: "is", "has", "uses", "platform"
 - object_value: the concrete value (e.g., "Power BI", "SAP Analytics Cloud", "14 days")
 - confidence: 0.0-1.0
+- valid_from: when this fact became true (e.g., "2026-01-01", "Q3 2026", "March 2025"). null if unknown.
+- valid_until: when this fact stopped being true. null if still valid.
 
 CRITICAL: The predicate must be descriptive enough that two claims about the SAME topic will have SIMILAR predicates even if the source text uses different words. For example:
 - "Our main BI tool is Power BI" → predicate: "primary data visualization and BI tool"
@@ -44,8 +46,8 @@ Rules:
 
 Example:
 [
-  {{"subject": "Company", "predicate": "official data visualization and BI tool", "object_value": "Power BI", "confidence": 0.9}},
-  {{"subject": "HR Policy", "predicate": "minimum vacation request notice period", "object_value": "14 days", "confidence": 0.85}}
+  {{"subject": "Company", "predicate": "official data visualization and BI tool", "object_value": "Power BI", "confidence": 0.9, "valid_from": "2025-01-01", "valid_until": null}},
+  {{"subject": "HR Policy", "predicate": "minimum vacation request notice period", "object_value": "14 days", "confidence": 0.85, "valid_from": null, "valid_until": null}}
 ]
 
 Text:
@@ -126,6 +128,8 @@ async def extract_claims_from_text(
                         "predicate": str(c["predicate"]),
                         "object_value": str(c["object_value"]),
                         "confidence": float(c.get("confidence", 0.5)),
+                        "valid_from": str(c["valid_from"]) if c.get("valid_from") else None,
+                        "valid_until": str(c["valid_until"]) if c.get("valid_until") else None,
                     })
             return valid_claims
 
@@ -184,6 +188,8 @@ async def extract_and_store_claims(
                 confidence=rc["confidence"],
                 evidence_span=rc["evidence"],
                 status="active",
+                valid_from=rc.get("valid_from"),
+                valid_until=rc.get("valid_until"),
             )
             session.add(claim)
             all_claims.append(claim)

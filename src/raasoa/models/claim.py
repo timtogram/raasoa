@@ -29,6 +29,13 @@ class Claim(UUIDMixin, Base):
     status: Mapped[str] = mapped_column(
         Text, default="active", server_default="active"
     )  # "active", "superseded", "rejected"
+    # Temporal validity — when this fact is/was true
+    valid_from: Mapped[str | None] = mapped_column(
+        Text, default=None
+    )  # e.g. "2026-01-01", "Q3 2026", "March 2025"
+    valid_until: Mapped[str | None] = mapped_column(
+        Text, default=None
+    )  # e.g. "2026-12-31", None = still valid
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

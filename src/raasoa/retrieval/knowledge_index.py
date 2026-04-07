@@ -56,6 +56,8 @@ class IndexEntry:
     value: str
     confidence: float
     source_documents: list[str]
+    valid_from: str | None = None
+    valid_until: str | None = None
     status: str = "active"
 
 

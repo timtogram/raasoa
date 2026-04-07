@@ -115,6 +115,8 @@ async def retrieve(
             embedding_provider=provider,
             top_k=request.top_k * 3,
             principal_id=request.principal_id,
+            source_type=request.source_type,
+            doc_type=request.doc_type,
         )
         search_results = await reranker.rerank(
             request.query, search_results, request.top_k,

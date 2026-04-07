@@ -1,3 +1,10 @@
+"""Hybrid Search — Dense + BM25 + Reciprocal Rank Fusion.
+
+Supports pre-filtering by source_type and doc_type BEFORE vector scan.
+This is the MemPalace insight: structural metadata filtering before
+semantic search improves accuracy by up to 34%.
+"""
+
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -30,65 +37,96 @@ async def hybrid_search(
     lexical_weight: float = 1.0,
     rrf_k: int = 60,
     principal_id: str | None = None,
+    source_type: str | None = None,
+    doc_type: str | None = None,
 ) -> list[SearchResult]:
-    """Hybrid search combining dense vector + BM25 with Reciprocal Rank Fusion.
+    """Hybrid search with optional source/type pre-filtering.
 
-    When principal_id is set, results are filtered to documents the principal
-    has access to (via acl_entries). Documents without any ACL entries are
-    accessible to everyone (open by default).
+    Pre-filtering narrows the search space BEFORE vector scan,
+    significantly improving precision for targeted queries.
+
+    Args:
+        source_type: Filter to a specific source (e.g. "sharepoint", "jira")
+        doc_type: Filter to a document type (e.g. "pdf", "policy")
+        principal_id: ACL filter — only docs accessible to this user
     """
+    # Build dynamic filter clauses
+    extra_filters = ""
+    params: dict[str, Any] = {
+        "query_embedding": str(query_embedding),
+        "query": query,
+        "tenant_id": tenant_id,
+        "candidate_limit": top_k * 3,
+        "semantic_weight": semantic_weight,
+        "lexical_weight": lexical_weight,
+        "rrf_k": rrf_k,
+        "top_k": top_k,
+    }
 
-    # Build ACL filter clause
-    if principal_id:
-        acl_filter = (
-            "AND (NOT EXISTS ("
-            "  SELECT 1 FROM acl_entries a2 WHERE a2.document_id = d.id"
-            ") OR EXISTS ("
-            "  SELECT 1 FROM acl_entries a WHERE a.document_id = d.id "
-            "  AND a.principal_id = :principal_id "
-            "  AND a.permission IN ('read', 'write', 'admin')"
-            "))"
+    if source_type:
+        extra_filters += (
+            " AND d.source_id IN ("
+            "   SELECT s.id FROM sources s"
+            "   WHERE s.source_type = :source_type"
+            " )"
         )
-    else:
-        acl_filter = ""
+        params["source_type"] = source_type
+
+    if doc_type:
+        extra_filters += " AND d.doc_type = :doc_type"
+        params["doc_type"] = doc_type
+
+    if principal_id:
+        extra_filters += (
+            " AND (NOT EXISTS ("
+            "   SELECT 1 FROM acl_entries a2 WHERE a2.document_id = d.id"
+            " ) OR EXISTS ("
+            "   SELECT 1 FROM acl_entries a WHERE a.document_id = d.id"
+            "   AND a.principal_id = :principal_id"
+            "   AND a.permission IN ('read', 'write', 'admin')"
+            " ))"
+        )
+        params["principal_id"] = principal_id
+
+    base_where = (
+        "d.tenant_id = :tenant_id"
+        " AND d.status = 'indexed'"
+        " AND d.review_status NOT IN"
+        " ('quarantined', 'rejected', 'superseded')"
+        f"{extra_filters}"
+    )
 
     sql = text(f"""
         WITH semantic AS (
             SELECT
-                c.id,
-                c.document_id,
-                c.chunk_text,
-                c.section_title,
-                c.chunk_type,
-                ROW_NUMBER() OVER (ORDER BY c.embedding <=> :query_embedding) AS rn
+                c.id, c.document_id, c.chunk_text,
+                c.section_title, c.chunk_type,
+                ROW_NUMBER() OVER (
+                    ORDER BY c.embedding <=> :query_embedding
+                ) AS rn
             FROM chunks c
             JOIN documents d ON c.document_id = d.id
-            WHERE d.tenant_id = :tenant_id
-              AND d.status = 'indexed'
-              AND d.review_status NOT IN ('quarantined', 'rejected', 'superseded')
+            WHERE {base_where}
               AND c.embedding IS NOT NULL
-              {acl_filter}
             ORDER BY c.embedding <=> :query_embedding
             LIMIT :candidate_limit
         ),
         lexical AS (
             SELECT
-                c.id,
-                c.document_id,
-                c.chunk_text,
-                c.section_title,
-                c.chunk_type,
+                c.id, c.document_id, c.chunk_text,
+                c.section_title, c.chunk_type,
                 ROW_NUMBER() OVER (
-                    ORDER BY ts_rank(c.tsv, plainto_tsquery('simple', :query)) DESC
+                    ORDER BY ts_rank(
+                        c.tsv, plainto_tsquery('simple', :query)
+                    ) DESC
                 ) AS rn
             FROM chunks c
             JOIN documents d ON c.document_id = d.id
-            WHERE d.tenant_id = :tenant_id
-              AND d.status = 'indexed'
-              AND d.review_status NOT IN ('quarantined', 'rejected', 'superseded')
+            WHERE {base_where}
               AND c.tsv @@ plainto_tsquery('simple', :query)
-              {acl_filter}
-            ORDER BY ts_rank(c.tsv, plainto_tsquery('simple', :query)) DESC
+            ORDER BY ts_rank(
+                c.tsv, plainto_tsquery('simple', :query)
+            ) DESC
             LIMIT :candidate_limit
         )
         SELECT
@@ -109,22 +147,7 @@ async def hybrid_search(
         LIMIT :top_k
     """)
 
-    params: dict[str, Any] = {
-        "query_embedding": str(query_embedding),
-        "query": query,
-        "tenant_id": tenant_id,
-        "candidate_limit": top_k * 3,
-        "semantic_weight": semantic_weight,
-        "lexical_weight": lexical_weight,
-        "rrf_k": rrf_k,
-        "top_k": top_k,
-    }
-    if principal_id:
-        params["principal_id"] = principal_id
-
     result = await session.execute(sql, params)
-
-    rows = result.fetchall()
     return [
         SearchResult(
             chunk_id=row.chunk_id,
@@ -136,7 +159,7 @@ async def hybrid_search(
             semantic_rank=row.semantic_rank,
             lexical_rank=row.lexical_rank,
         )
-        for row in rows
+        for row in result.fetchall()
     ]
 
 
@@ -147,6 +170,8 @@ async def search(
     embedding_provider: EmbeddingProvider,
     top_k: int = 10,
     principal_id: str | None = None,
+    source_type: str | None = None,
+    doc_type: str | None = None,
 ) -> list[SearchResult]:
     """High-level search: embed query, then hybrid search."""
     embeddings = await embedding_provider.embed([query])
@@ -159,4 +184,6 @@ async def search(
         tenant_id=tenant_id,
         top_k=top_k,
         principal_id=principal_id,
+        source_type=source_type,
+        doc_type=doc_type,
     )
