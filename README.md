@@ -228,7 +228,7 @@ Full list in `.env.example`.
 - **Model agnostic**: Swap providers with one env variable.
 - **Tenant isolation**: Every query scoped to the authenticated tenant.
 - **Content-hash dedup**: Re-ingesting unchanged documents is a no-op.
-- **Auto-curation**: Knowledge index rebuilds after every ingestion.
+- **Auto-curation**: Knowledge index rebuilds after every ingestion. LLM curator normalizes predicates on demand.
 
 ## Development
 
@@ -237,7 +237,7 @@ uv sync --extra dev --extra parsing
 docker compose up -d postgres
 uv run alembic upgrade head
 uv run uvicorn raasoa.main:app --reload --port 8000
-uv run pytest -v                # 145 tests
+uv run pytest -v              # 145+ tests
 uv run ruff check src/          # 0 errors
 uv run mypy src/raasoa           # 0 errors
 ```
