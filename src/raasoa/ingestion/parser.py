@@ -251,12 +251,13 @@ def parse_csv(data: bytes, filename: str) -> ParsedDocument:
             metadata={"format": "csv", "filename": filename},
         )
 
-    try:
-        dialect = csv.Sniffer().sniff(text[:2048])
-    except csv.Error:
-        dialect = None  # type: ignore[assignment]
+    import contextlib
 
-    reader = csv.reader(io.StringIO(text), dialect or csv.excel)
+    detected_dialect: type[csv.Dialect] | None = None
+    with contextlib.suppress(csv.Error):
+        detected_dialect = csv.Sniffer().sniff(text[:2048])
+
+    reader = csv.reader(io.StringIO(text), detected_dialect or csv.excel)
 
     rows_raw = list(reader)
     if not rows_raw:

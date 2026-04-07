@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import uuid
+from typing import Any
 
 import httpx
 from sqlalchemy import text
@@ -173,7 +174,7 @@ async def normalize_predicates(
 async def lint_knowledge(
     session: AsyncSession,
     tenant_id: uuid.UUID,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """LLM-driven knowledge audit.
 
     Reviews the knowledge index for contradictions, stale entries,
@@ -220,7 +221,7 @@ async def lint_knowledge(
         findings = json.loads(raw[start:end])
         if not isinstance(findings, list):
             return []
-        return findings  # type: ignore[no-any-return]
+        return findings
     except Exception:
         logger.warning("LLM lint failed", exc_info=True)
         return []
@@ -229,7 +230,7 @@ async def lint_knowledge(
 async def curate(
     session: AsyncSession,
     tenant_id: uuid.UUID,
-) -> dict:
+) -> dict[str, Any]:
     """Run the full curation pipeline.
 
     1. Normalize predicates

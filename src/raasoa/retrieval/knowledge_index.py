@@ -22,6 +22,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,7 +99,7 @@ async def build_index(
         return {"entries": 0, "claims_processed": 0}
 
     # Group by normalized (subject, predicate)
-    groups: dict[tuple[str, str], list] = {}
+    groups: dict[tuple[str, str], list[Any]] = {}
     for c in claims:
         key = (normalize(c.subject), normalize(c.predicate))
         if key not in groups:
