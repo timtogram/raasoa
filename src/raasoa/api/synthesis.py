@@ -111,6 +111,24 @@ async def get_synthesis(
     )
 
 
+@router.post("/build-index")
+async def build_knowledge_index(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Rebuild the knowledge index from active claims.
+
+    The index enables sub-5ms factual lookups without embedding.
+    Run this after ingesting new documents or resolving conflicts.
+    """
+    tenant_id = resolve_tenant(request)
+
+    from raasoa.retrieval.knowledge_index import build_index
+
+    stats = await build_index(session, tenant_id)
+    return {"status": "built", **stats}
+
+
 @router.post("/compile")
 async def compile_synthesis(
     request: Request,

@@ -50,10 +50,25 @@ class FeedbackRequest(BaseModel):
     )
 
 
+class IndexHit(BaseModel):
+    """Direct answer from the knowledge index (no embedding needed)."""
+
+    subject: str
+    predicate: str
+    value: str
+    confidence: float
+    source_documents: list[str] = []
+
+
 class RetrieveResponse(BaseModel):
     query: str
     routed_to: str = "rag"
     routing_reason: str = "default_rag"
-    results: list[ChunkHit] = []
+    # Layer 1: Knowledge Index (fastest, highest confidence)
+    index_hits: list[IndexHit] = []
+    # Layer 2: Structured SQL answer
     structured: StructuredAnswer | None = None
+    # Layer 3: Hybrid search chunks
+    results: list[ChunkHit] = []
+    # Overall confidence
     confidence: ConfidenceInfo

@@ -1,5 +1,16 @@
+"""Retrieval API — 3-layer combined search.
+
+Layer 1: Knowledge Index (< 5ms, 100% confidence for factual queries)
+Layer 2: Structured SQL (< 20ms, for aggregation/metadata queries)
+Layer 3: Hybrid Search (200-800ms, for semantic/conceptual queries)
+
+All three layers are tried in order. Results are combined in one response
+so the consuming agent can pick the best answer.
+"""
+
 import logging
 import time
+import uuid
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
@@ -13,12 +24,14 @@ from raasoa.retrieval.confidence import compute_confidence
 from raasoa.retrieval.factory import get_reranker
 from raasoa.retrieval.feedback import FeedbackSignal, store_feedback
 from raasoa.retrieval.hybrid_search import search
+from raasoa.retrieval.knowledge_index import lookup as index_lookup
 from raasoa.retrieval.query_router import QueryType, route_query
 from raasoa.retrieval.structured import structured_query
 from raasoa.schemas.retrieval import (
     ChunkHit,
     ConfidenceInfo,
     FeedbackRequest,
+    IndexHit,
     RetrieveRequest,
     RetrieveResponse,
     StructuredAnswer,
@@ -34,16 +47,40 @@ async def retrieve(
     request: RetrieveRequest,
     session: AsyncSession = Depends(get_session),
 ) -> RetrieveResponse:
-    """Hybrid search with auth, ACL, query routing, and confidence."""
+    """3-layer combined retrieval: Index → Structured → Hybrid Search."""
     tenant_id = resolve_tenant(http_request)
     get_retrieve_limiter().check(str(tenant_id))
 
     start_time = time.monotonic()
-    routing = route_query(request.query)
 
+    index_hits: list[IndexHit] = []
     structured: StructuredAnswer | None = None
     results_list: list[ChunkHit] = []
     confidence_info: ConfidenceInfo | None = None
+    routed_to = "rag"
+    routing_reason = "default_rag"
+
+    # ── Layer 1: Knowledge Index Lookup ──────────────────
+    try:
+        idx_result = await index_lookup(session, tenant_id, request.query)
+        if idx_result.found:
+            index_hits = [
+                IndexHit(
+                    subject=e.subject,
+                    predicate=e.predicate,
+                    value=e.value,
+                    confidence=e.confidence,
+                    source_documents=e.source_documents,
+                )
+                for e in idx_result.entries
+            ]
+            routed_to = "index"
+            routing_reason = "knowledge_index_hit"
+    except Exception:
+        logger.debug("Index lookup failed", exc_info=True)
+
+    # ── Layer 2: Query Routing (Structured vs RAG) ───────
+    routing = route_query(request.query)
 
     if routing.query_type == QueryType.STRUCTURED:
         try:
@@ -55,6 +92,9 @@ async def retrieve(
                 data=sq_result.data,
                 query_type=sq_result.query_type,
             )
+            if not index_hits:
+                routed_to = "structured"
+                routing_reason = routing.reason
         except Exception:
             logger.warning("Structured query failed, falling back to RAG")
             routing = routing.__class__(
@@ -63,6 +103,7 @@ async def retrieve(
                 reason="structured_fallback",
             )
 
+    # ── Layer 3: Hybrid Search ───────────────────────────
     if routing.query_type == QueryType.RAG:
         provider = get_embedding_provider()
         reranker = get_reranker()
@@ -75,7 +116,6 @@ async def retrieve(
             top_k=request.top_k * 3,
             principal_id=request.principal_id,
         )
-
         search_results = await reranker.rerank(
             request.query, search_results, request.top_k,
         )
@@ -100,10 +140,27 @@ async def retrieve(
             top_score=confidence.top_score,
             answerable=confidence.answerable,
         )
+        if not index_hits and not structured:
+            routed_to = "rag"
+            routing_reason = routing.reason
 
+    # ── Confidence: boost if index hit ───────────────────
+    if index_hits and not confidence_info:
+        confidence_info = ConfidenceInfo(
+            retrieval_confidence=max(h.confidence for h in index_hits),
+            source_count=len(
+                {d for h in index_hits for d in h.source_documents}
+            ),
+            top_score=index_hits[0].confidence,
+            answerable=True,
+        )
+
+    # ── Audit log ────────────────────────────────────────
     latency_ms = int((time.monotonic() - start_time) * 1000)
     try:
-        chunk_ids = [r.chunk_id for r in results_list] if results_list else None
+        chunk_ids = (
+            [r.chunk_id for r in results_list] if results_list else None
+        )
         await session.execute(
             text(
                 "INSERT INTO retrieval_logs "
@@ -115,7 +172,7 @@ async def retrieve(
             {
                 "tid": tenant_id,
                 "query": request.query,
-                "routed": routing.query_type.value,
+                "routed": routed_to,
                 "chunks": chunk_ids,
                 "conf": confidence_info.retrieval_confidence
                 if confidence_info
@@ -133,10 +190,11 @@ async def retrieve(
 
     return RetrieveResponse(
         query=request.query,
-        routed_to=routing.query_type.value,
-        routing_reason=routing.reason,
-        results=results_list,
+        routed_to=routed_to,
+        routing_reason=routing_reason,
+        index_hits=index_hits,
         structured=structured,
+        results=results_list,
         confidence=confidence_info
         or ConfidenceInfo(
             retrieval_confidence=0.0,
@@ -155,11 +213,9 @@ async def submit_feedback(
 ) -> dict[str, str]:
     """Submit feedback on a retrieval result.
 
-    Positive feedback boosts the chunk's ranking for similar future queries.
-    Negative feedback demotes it. Over time, this makes retrieval smarter.
+    Positive feedback boosts the chunk for similar future queries.
     """
     tenant_id = resolve_tenant(http_request)
-    import uuid
 
     await store_feedback(
         session,
