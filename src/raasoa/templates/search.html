@@ -154,7 +154,6 @@ function doSearch(e) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             query: query,
-            tenant_id: '{{ tenant_id }}',
             top_k: topK,
         }),
     })

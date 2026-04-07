@@ -14,7 +14,7 @@ from raasoa.api.quality import router as quality_router
 from raasoa.api.retrieval import router as retrieval_router
 from raasoa.api.synthesis import router as synthesis_router
 from raasoa.api.webhooks import router as webhooks_router
-from raasoa.dashboard.routes import router as dashboard_router
+from raasoa.config import settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,7 +46,10 @@ app.include_router(acl_router)
 app.include_router(analytics_router)
 app.include_router(synthesis_router)
 app.include_router(webhooks_router)
-app.include_router(dashboard_router)
+if settings.dashboard_enabled:
+    from raasoa.dashboard.routes import router as dashboard_router
+
+    app.include_router(dashboard_router)
 
 
 @app.exception_handler(Exception)

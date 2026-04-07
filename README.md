@@ -239,7 +239,7 @@ uv run alembic upgrade head
 uv run uvicorn raasoa.main:app --reload --port 8000
 uv run pytest -v              # 145+ tests
 uv run ruff check src/          # 0 errors
-uv run mypy src/raasoa           # 0 errors
+uv run mypy src/raasoa --ignore-missing-imports  # 0 errors
 ```
 
 ## License

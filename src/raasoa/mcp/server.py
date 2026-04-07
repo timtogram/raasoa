@@ -28,13 +28,16 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Base URL — configurable via env
+# Configurable via env
 BASE_URL = "http://localhost:8000"
-DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
+API_KEY = ""  # Set via RAASOA_API_KEY env
 
 
 def _headers() -> dict[str, str]:
-    return {"X-Tenant-Id": DEFAULT_TENANT}
+    headers: dict[str, str] = {}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+    return headers
 
 
 # ── MCP Protocol Implementation (JSON-RPC over stdio) ──────────────
@@ -276,9 +279,9 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                 f"{BASE_URL}/v1/retrieve",
                 json={
                     "query": arguments["query"],
-                    "tenant_id": DEFAULT_TENANT,
                     "top_k": arguments.get("top_k", 5),
                 },
+                headers=_headers(),
             )
             resp.raise_for_status()
             data = resp.json()
@@ -653,9 +656,9 @@ def main() -> None:
     """Run the MCP server on stdio."""
     import os
 
-    global BASE_URL, DEFAULT_TENANT
+    global BASE_URL, API_KEY
     BASE_URL = os.environ.get("RAASOA_URL", BASE_URL)
-    DEFAULT_TENANT = os.environ.get("RAASOA_TENANT", DEFAULT_TENANT)
+    API_KEY = os.environ.get("RAASOA_API_KEY", API_KEY)
 
     logging.basicConfig(
         level=logging.INFO,

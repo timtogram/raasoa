@@ -446,7 +446,8 @@ async def dashboard_search_proxy(
     body = await request.json()
     query = body.get("query", "")
     top_k = body.get("top_k", 5)
-    tid = _uuid.UUID(body.get("tenant_id", DEFAULT_TENANT))
+    # Always use DEFAULT_TENANT — never accept tenant from request body
+    tid = _uuid.UUID(DEFAULT_TENANT)
 
     routing = route_query(query)
 

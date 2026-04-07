@@ -83,10 +83,18 @@ def resolve_tenant(request: Request) -> uuid.UUID:
 def verify_webhook_secret(request: Request) -> None:
     """Verify the webhook shared secret.
 
-    Raises 401 if webhook_secret is configured but request doesn't match.
+    Raises 401 if:
+    - webhook_secret is configured and request doesn't match
+    - auth is enabled but NO webhook_secret is configured (no bypass)
     """
     if not settings.webhook_secret:
-        return  # No secret configured — skip verification
+        # No secret configured — if auth is enabled, webhooks MUST use API key
+        if settings.auth_enabled:
+            raise HTTPException(
+                status_code=401,
+                detail="Webhook requires API key or WEBHOOK_SECRET configuration.",
+            )
+        return  # Auth disabled — allow all
 
     provided = request.headers.get("x-webhook-secret", "").strip()
     if provided != settings.webhook_secret:
