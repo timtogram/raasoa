@@ -46,8 +46,22 @@ class ReviewTaskResponse(BaseModel):
 
 
 class ConflictResolution(BaseModel):
-    resolution: str = Field(..., description="How the conflict was resolved")
+    resolution: str = Field(
+        ...,
+        description=(
+            "keep_a, keep_b, keep_both, reject_both, dismiss. "
+            "When keep_both: use context_a/context_b to explain WHY both are valid."
+        ),
+    )
     comment: str = ""
+    context_a: str | None = Field(
+        default=None,
+        description="When keep_both: context for Doc A (e.g. 'applies to Marketing dept')",
+    )
+    context_b: str | None = Field(
+        default=None,
+        description="When keep_both: context for Doc B (e.g. 'applies to Engineering dept')",
+    )
 
 
 class ReviewAction(BaseModel):

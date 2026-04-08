@@ -7,12 +7,14 @@ from fastapi.responses import JSONResponse
 
 from raasoa.api.acl import router as acl_router
 from raasoa.api.analytics import router as analytics_router
+from raasoa.api.claim_clusters import router as claim_clusters_router
 from raasoa.api.documents import router as documents_router
 from raasoa.api.health import router as health_router
 from raasoa.api.ingestion import router as ingestion_router
 from raasoa.api.metrics import router as metrics_router
 from raasoa.api.quality import router as quality_router
 from raasoa.api.retrieval import router as retrieval_router
+from raasoa.api.source_tree import router as source_tree_router
 from raasoa.api.sources import router as sources_router
 from raasoa.api.synthesis import router as synthesis_router
 from raasoa.api.webhooks import router as webhooks_router
@@ -49,6 +51,8 @@ app.include_router(acl_router)
 app.include_router(analytics_router)
 app.include_router(synthesis_router)
 app.include_router(sources_router)
+app.include_router(claim_clusters_router)
+app.include_router(source_tree_router)
 app.include_router(webhooks_router)
 if settings.dashboard_enabled:
     from raasoa.dashboard.routes import router as dashboard_router

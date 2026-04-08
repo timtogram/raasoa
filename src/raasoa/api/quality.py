@@ -211,6 +211,27 @@ async def resolve_conflict(
                 {"did": did},
             )
 
+    # "keep_both" with context — annotate claims so agents know scope
+    if resolution == "keep_both":
+        if body.context_a:
+            await session.execute(
+                text(
+                    "UPDATE claims SET evidence_span = "
+                    "evidence_span || E'\\n[Context: ' || :ctx || ']' "
+                    "WHERE document_id = :did AND status = 'active'"
+                ),
+                {"did": conflict.document_a_id, "ctx": body.context_a},
+            )
+        if body.context_b:
+            await session.execute(
+                text(
+                    "UPDATE claims SET evidence_span = "
+                    "evidence_span || E'\\n[Context: ' || :ctx || ']' "
+                    "WHERE document_id = :did AND status = 'active'"
+                ),
+                {"did": conflict.document_b_id, "ctx": body.context_b},
+            )
+
     if superseded_doc_id:
         await session.execute(
             text(
@@ -230,6 +251,8 @@ async def resolve_conflict(
     resolution_data = _json.dumps({
         "resolution": resolution,
         "comment": body.comment,
+        "context_a": body.context_a,
+        "context_b": body.context_b,
         "superseded_doc": str(superseded_doc_id)
         if superseded_doc_id
         else None,
