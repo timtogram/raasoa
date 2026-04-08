@@ -34,6 +34,9 @@ class ChunkHit(BaseModel):
     source_url: str | None = None
     source_type: str | None = None
     source_name: str | None = None
+    # Location within document
+    page_number: int | None = None
+    source_location: str | None = None
 
 
 class ConfidenceInfo(BaseModel):

@@ -96,8 +96,10 @@ async def ingest_file(
     )
     session.add(doc_version)
 
-    # 5. Chunk
-    chunk_results = chunk_document(parsed.full_text, title=parsed.title)
+    # 5. Chunk (pass sections for page/location tracking)
+    chunk_results = chunk_document(
+        parsed.full_text, title=parsed.title, sections=parsed.sections,
+    )
 
     if not chunk_results:
         doc.chunk_count = 0
@@ -138,6 +140,8 @@ async def ingest_file(
             section_title=cr.section_title,
             chunk_type=cr.chunk_type,
             token_count=cr.token_count,
+            page_number=cr.page_number,
+            source_location=cr.source_location,
             embedding=emb,
             embedding_model=embedding_provider.model_id,
             embedded_at=now,

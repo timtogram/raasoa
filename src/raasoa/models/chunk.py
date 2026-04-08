@@ -41,6 +41,8 @@ class Chunk(UUIDMixin, Base):
     metadata_: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, default=dict, server_default="{}"
     )
+    page_number: Mapped[int | None] = mapped_column(Integer)
+    source_location: Mapped[str | None] = mapped_column(Text)
     tsv: Mapped[str | None] = mapped_column(TSVECTOR)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

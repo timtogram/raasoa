@@ -25,6 +25,8 @@ class ParsedSection:
     text: str
     title: str | None = None
     section_type: str = "text"  # 'text', 'table', 'code', 'heading'
+    page_number: int | None = None  # PDF page, PPTX slide
+    source_location: str | None = None  # e.g. "Page 5", "Slide 3", "Sheet: Revenue"
 
 
 @dataclass
@@ -101,6 +103,8 @@ def parse_pdf(data: bytes, filename: str) -> ParsedDocument:
                         text=text,
                         title=f"Page {i + 1}",
                         section_type="text",
+                        page_number=i + 1,
+                        source_location=f"Page {i + 1}",
                     )
                 )
 
@@ -124,6 +128,8 @@ def parse_pdf(data: bytes, filename: str) -> ParsedDocument:
                                     text=md_table,
                                     title=f"Page {i + 1} Table {t_idx + 1}",
                                     section_type="table",
+                                    page_number=i + 1,
+                                    source_location=f"Page {i + 1}, Table {t_idx + 1}",
                                 )
                             )
             except (AttributeError, Exception):
@@ -344,6 +350,7 @@ def parse_xlsx(data: bytes, filename: str) -> ParsedDocument:
                         text=md_table,
                         title=sheet_name,
                         section_type="table",
+                        source_location=f"Sheet: {sheet_name}",
                     )
                 )
 
@@ -415,6 +422,8 @@ def parse_pptx(data: bytes, filename: str) -> ParsedDocument:
                         text=slide_text,
                         title=f"Slide {i}",
                         section_type="text",
+                        page_number=i,
+                        source_location=f"Slide {i}",
                     )
                 )
 

@@ -309,9 +309,15 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                 title = hit.get("document_title") or ""
                 source_url = hit.get("source_url") or ""
                 source_type = hit.get("source_type") or ""
+                location = hit.get("source_location") or ""
+                page = hit.get("page_number")
                 provenance = ""
                 if title:
                     provenance += f"Document: {title}\n"
+                if location:
+                    provenance += f"Location: {location}\n"
+                elif page:
+                    provenance += f"Page: {page}\n"
                 if source_url:
                     provenance += f"Source: {source_url}\n"
                 if source_type:

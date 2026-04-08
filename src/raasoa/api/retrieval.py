@@ -137,6 +137,8 @@ async def retrieve(
                 source_url=r.source_url,
                 source_type=r.source_type,
                 source_name=r.source_name,
+                page_number=r.page_number,
+                source_location=r.source_location,
             )
             for r in search_results
         ]

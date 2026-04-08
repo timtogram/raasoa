@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 import tiktoken
 
@@ -12,6 +13,8 @@ class ChunkResult:
     section_title: str | None = None
     chunk_type: str = "text"
     token_count: int = 0
+    page_number: int | None = None
+    source_location: str | None = None  # "Page 5", "Slide 3", "Sheet: Revenue"
 
 
 _encoder: tiktoken.Encoding | None = None
@@ -115,23 +118,59 @@ def recursive_split(
 def chunk_document(
     full_text: str,
     title: str | None = None,
+    sections: Any = None,
     chunk_size: int = settings.chunk_size,
     chunk_overlap: int = settings.chunk_overlap,
 ) -> list[ChunkResult]:
-    """Chunk a document into smaller pieces with token counting."""
+    """Chunk a document into smaller pieces with token counting.
+
+    If sections with page_number/source_location are provided,
+    chunks inherit the location from their source section.
+    """
+    # Build a character-offset → section map for location tracking
+    section_map: list[tuple[int, int, str | None, int | None]] = []
+    if sections:
+        offset = 0
+        for s in sections:
+            # Find where this section's text appears in full_text
+            idx = full_text.find(s.text, offset) if hasattr(s, "text") else -1
+            if idx >= 0:
+                loc = getattr(s, "source_location", None)
+                pg = getattr(s, "page_number", None)
+                section_map.append((idx, idx + len(s.text), loc, pg))
+                offset = idx + 1
+
     raw_chunks = recursive_split(full_text, chunk_size, chunk_overlap)
 
     results: list[ChunkResult] = []
+    char_offset = 0
     for i, chunk_text in enumerate(raw_chunks):
         chunk_text = chunk_text.strip()
         if not chunk_text:
             continue
+
+        # Find which section this chunk belongs to
+        chunk_start = full_text.find(chunk_text, char_offset)
+        if chunk_start >= 0:
+            char_offset = chunk_start + 1
+
+        source_location: str | None = None
+        page_number: int | None = None
+        if chunk_start >= 0:
+            for sec_start, sec_end, loc, pg in section_map:
+                if sec_start <= chunk_start < sec_end:
+                    source_location = loc
+                    page_number = pg
+                    break
+
         results.append(
             ChunkResult(
                 text=chunk_text,
                 index=i,
                 section_title=title,
                 token_count=count_tokens(chunk_text),
+                page_number=page_number,
+                source_location=source_location,
             )
         )
 

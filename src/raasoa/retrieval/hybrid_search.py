@@ -30,6 +30,9 @@ class SearchResult:
     source_url: str | None = None
     source_type: str | None = None
     source_name: str | None = None
+    # Location within document
+    page_number: int | None = None
+    source_location: str | None = None  # "Page 5", "Slide 3", "Sheet: Revenue"
 
 
 async def hybrid_search(
@@ -106,6 +109,7 @@ async def hybrid_search(
             SELECT
                 c.id, c.document_id, c.chunk_text,
                 c.section_title, c.chunk_type,
+                c.page_number, c.source_location,
                 d.title AS doc_title, d.source_url,
                 src.source_type AS src_type, src.name AS src_name,
                 ROW_NUMBER() OVER (
@@ -123,6 +127,7 @@ async def hybrid_search(
             SELECT
                 c.id, c.document_id, c.chunk_text,
                 c.section_title, c.chunk_type,
+                c.page_number, c.source_location,
                 d.title AS doc_title, d.source_url,
                 src.source_type AS src_type, src.name AS src_name,
                 ROW_NUMBER() OVER (
@@ -158,6 +163,9 @@ async def hybrid_search(
             COALESCE(s.source_url, l.source_url) AS source_url,
             COALESCE(s.src_type, l.src_type) AS src_type,
             COALESCE(s.src_name, l.src_name) AS src_name,
+            COALESCE(s.page_number, l.page_number) AS page_number,
+            COALESCE(s.source_location, l.source_location)
+                AS source_location,
             (
                 COALESCE(:semantic_weight * (1.0 / (:rrf_k + s.rn)), 0) +
                 COALESCE(:lexical_weight * (1.0 / (:rrf_k + l.rn)), 0) +
@@ -188,6 +196,8 @@ async def hybrid_search(
             source_url=row.source_url,
             source_type=row.src_type,
             source_name=row.src_name,
+            page_number=row.page_number,
+            source_location=row.source_location,
         )
         for row in result.fetchall()
     ]
