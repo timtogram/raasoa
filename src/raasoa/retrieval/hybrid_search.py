@@ -25,6 +25,11 @@ class SearchResult:
     score: float
     semantic_rank: int | None = None
     lexical_rank: int | None = None
+    # Source provenance — so consumers can link to the original
+    document_title: str | None = None
+    source_url: str | None = None
+    source_type: str | None = None
+    source_name: str | None = None
 
 
 async def hybrid_search(
@@ -101,11 +106,14 @@ async def hybrid_search(
             SELECT
                 c.id, c.document_id, c.chunk_text,
                 c.section_title, c.chunk_type,
+                d.title AS doc_title, d.source_url,
+                src.source_type AS src_type, src.name AS src_name,
                 ROW_NUMBER() OVER (
                     ORDER BY c.embedding <=> :query_embedding
                 ) AS rn
             FROM chunks c
             JOIN documents d ON c.document_id = d.id
+            LEFT JOIN sources src ON d.source_id = src.id
             WHERE {base_where}
               AND c.embedding IS NOT NULL
             ORDER BY c.embedding <=> :query_embedding
@@ -115,6 +123,8 @@ async def hybrid_search(
             SELECT
                 c.id, c.document_id, c.chunk_text,
                 c.section_title, c.chunk_type,
+                d.title AS doc_title, d.source_url,
+                src.source_type AS src_type, src.name AS src_name,
                 ROW_NUMBER() OVER (
                     ORDER BY ts_rank(
                         c.tsv, plainto_tsquery('simple', :query)
@@ -122,6 +132,7 @@ async def hybrid_search(
                 ) AS rn
             FROM chunks c
             JOIN documents d ON c.document_id = d.id
+            LEFT JOIN sources src ON d.source_id = src.id
             WHERE {base_where}
               AND c.tsv @@ plainto_tsquery('simple', :query)
             ORDER BY ts_rank(
@@ -143,6 +154,10 @@ async def hybrid_search(
             COALESCE(s.chunk_text, l.chunk_text) AS chunk_text,
             COALESCE(s.section_title, l.section_title) AS section_title,
             COALESCE(s.chunk_type, l.chunk_type) AS chunk_type,
+            COALESCE(s.doc_title, l.doc_title) AS doc_title,
+            COALESCE(s.source_url, l.source_url) AS source_url,
+            COALESCE(s.src_type, l.src_type) AS src_type,
+            COALESCE(s.src_name, l.src_name) AS src_name,
             (
                 COALESCE(:semantic_weight * (1.0 / (:rrf_k + s.rn)), 0) +
                 COALESCE(:lexical_weight * (1.0 / (:rrf_k + l.rn)), 0) +
@@ -169,6 +184,10 @@ async def hybrid_search(
             score=float(row.rrf_score),
             semantic_rank=row.semantic_rank,
             lexical_rank=row.lexical_rank,
+            document_title=row.doc_title,
+            source_url=row.source_url,
+            source_type=row.src_type,
+            source_name=row.src_name,
         )
         for row in result.fetchall()
     ]

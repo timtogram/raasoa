@@ -303,11 +303,23 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             if structured:
                 parts.append(f"\nStructured Answer: {structured['answer']}\n")
 
-            # RAG results
+            # RAG results with source provenance
             for i, hit in enumerate(data.get("results", []), 1):
                 section = f" [{hit.get('section_title', '')}]" if hit.get("section_title") else ""
+                title = hit.get("document_title") or ""
+                source_url = hit.get("source_url") or ""
+                source_type = hit.get("source_type") or ""
+                provenance = ""
+                if title:
+                    provenance += f"Document: {title}\n"
+                if source_url:
+                    provenance += f"Source: {source_url}\n"
+                if source_type:
+                    provenance += f"Source type: {source_type}\n"
                 parts.append(
-                    f"\n--- Result #{i}{section} (score: {hit['score']:.4f}) ---\n"
+                    f"\n--- Result #{i}{section} "
+                    f"(score: {hit['score']:.4f}) ---\n"
+                    f"{provenance}"
                     f"{hit['text']}\n"
                 )
 

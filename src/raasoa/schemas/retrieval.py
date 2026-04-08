@@ -29,6 +29,11 @@ class ChunkHit(BaseModel):
     score: float
     semantic_rank: int | None
     lexical_rank: int | None
+    # Source provenance — link back to original
+    document_title: str | None = None
+    source_url: str | None = None
+    source_type: str | None = None
+    source_name: str | None = None
 
 
 class ConfidenceInfo(BaseModel):

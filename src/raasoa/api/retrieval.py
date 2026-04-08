@@ -133,6 +133,10 @@ async def retrieve(
                 score=r.score,
                 semantic_rank=r.semantic_rank,
                 lexical_rank=r.lexical_rank,
+                document_title=r.document_title,
+                source_url=r.source_url,
+                source_type=r.source_type,
+                source_name=r.source_name,
             )
             for r in search_results
         ]
