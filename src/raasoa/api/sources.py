@@ -32,6 +32,10 @@ class SourceCreate(BaseModel):
         default_factory=dict,
         description="Connection config (token, url, filters, etc.)",
     )
+    sync_interval_minutes: int | None = Field(
+        default=None,
+        description="Auto-sync interval in minutes. None = manual only.",
+    )
 
 
 class SourceResponse(BaseModel):
@@ -243,37 +247,72 @@ async def _sync_notion(
     query: str,
     limit: int,
 ) -> dict[str, Any]:
-    """Sync pages from Notion using the API token in config."""
+    """Sync pages from Notion with full metadata extraction.
+
+    Extracts: title, author, last_edited_by, last_edited_time,
+    created_time, status, tags/topics, parent page path.
+    Uses last_edited_time for delta-sync (only re-ingest changed pages).
+    """
     import httpx
 
     token = config.get("token", "")
     if not token:
         return {
             "status": "error",
-            "message": "No Notion token configured. Set 'token' in source config.",
+            "message": "No Notion token configured.",
         }
 
     from raasoa.ingestion.pipeline import ingest_file
     from raasoa.providers.factory import get_embedding_provider
 
-    stats: dict[str, Any] = {"found": 0, "synced": 0, "skipped": 0, "errors": []}
+    stats: dict[str, Any] = {
+        "found": 0, "synced": 0, "skipped": 0,
+        "unchanged": 0, "errors": [],
+    }
+
+    # Get last sync time for delta-sync
+    cursor_result = await session.execute(
+        text(
+            "SELECT delta_token FROM sync_cursors "
+            "WHERE source_id = :sid AND source_type = 'notion'"
+        ),
+        {"sid": source_id},
+    )
+    cursor_row = cursor_result.first()
+    last_sync_token = cursor_row.delta_token if cursor_row else None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": "2022-06-28",
+    }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         # Search Notion
+        search_body: dict[str, Any] = {
+            "page_size": min(limit, 100),
+        }
+        if query and query != "*":
+            search_body["query"] = query
+        if last_sync_token:
+            search_body["filter"] = {"property": "object", "value": "page"}
+            search_body["sort"] = {
+                "direction": "descending",
+                "timestamp": "last_edited_time",
+            }
+
         resp = await client.post(
             "https://api.notion.com/v1/search",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Notion-Version": "2022-06-28",
-            },
-            json={"query": query if query != "*" else "", "page_size": min(limit, 100)},
+            headers=headers,
+            json=search_body,
         )
         if resp.status_code != 200:
-            return {"status": "error", "message": f"Notion API error: {resp.status_code}"}
+            return {
+                "status": "error",
+                "message": f"Notion API {resp.status_code}",
+            }
 
         results = resp.json().get("results", [])
         stats["found"] = len(results)
-
         provider = get_embedding_provider()
 
         for page in results:
@@ -284,18 +323,29 @@ async def _sync_notion(
             page_id = page["id"]
             title = _notion_title(page)
 
+            # Extract rich metadata
+            meta = _notion_metadata(page)
+
+            # Delta-sync: skip if not changed since last sync
+            if (
+                last_sync_token
+                and meta.get("last_edited_time")
+                and meta["last_edited_time"] <= last_sync_token
+            ):
+                stats["unchanged"] += 1
+                continue
+
             # Fetch page blocks
             try:
                 blocks_resp = await client.get(
                     f"https://api.notion.com/v1/blocks/{page_id}/children",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Notion-Version": "2022-06-28",
-                    },
+                    headers=headers,
                     params={"page_size": 100},
                 )
                 blocks_resp.raise_for_status()
-                content = _notion_blocks_to_text(blocks_resp.json().get("results", []))
+                content = _notion_blocks_to_text(
+                    blocks_resp.json().get("results", []),
+                )
             except Exception:
                 content = title
 
@@ -303,8 +353,28 @@ async def _sync_notion(
                 stats["skipped"] += 1
                 continue
 
+            # Build file with metadata header
+            meta_header = ""
+            if meta.get("author"):
+                meta_header += f"Author: {meta['author']}\n"
+            if meta.get("last_edited_by"):
+                meta_header += f"Last edited by: {meta['last_edited_by']}\n"
+            if meta.get("last_edited_time"):
+                meta_header += f"Last edited: {meta['last_edited_time']}\n"
+            if meta.get("status"):
+                meta_header += f"Status: {meta['status']}\n"
+            if meta.get("tags"):
+                meta_header += f"Tags: {', '.join(meta['tags'])}\n"
+            if meta.get("parent_path"):
+                meta_header += f"Path: {meta['parent_path']}\n"
+
+            file_content = f"# {title}\n"
+            if meta_header:
+                file_content += f"\n{meta_header}\n"
+            file_content += f"\n{content}"
+            file_data = file_content.encode("utf-8")
+
             # Ingest
-            file_data = f"# {title}\n\n{content}".encode()
             try:
                 doc, _assessment = await ingest_file(
                     session=session,
@@ -320,16 +390,48 @@ async def _sync_notion(
                 url = page.get("url", "")
                 if url:
                     await session.execute(
-                        text("UPDATE documents SET source_url = :url WHERE id = :did"),
+                        text(
+                            "UPDATE documents "
+                            "SET source_url = :url "
+                            "WHERE id = :did"
+                        ),
                         {"url": url, "did": doc.id},
                     )
                 await session.commit()
 
                 stats["synced"] += 1
-                logger.info("Synced Notion: %s (%d chunks)", title, doc.chunk_count)
-
+                logger.info(
+                    "Synced Notion: %s (%d chunks)", title, doc.chunk_count,
+                )
             except Exception as e:
-                stats["errors"].append({"page": title, "error": str(e)[:200]})
+                stats["errors"].append(
+                    {"page": title, "error": str(e)[:200]},
+                )
+
+    # Update delta token for next sync
+    if stats["synced"] > 0:
+        from datetime import UTC, datetime
+
+        await session.execute(
+            text(
+                "INSERT INTO sync_cursors "
+                "(source_type, source_id, delta_token, "
+                " last_sync_at, sync_status, items_synced) "
+                "VALUES ('notion', :sid, :token, now(), "
+                " 'completed', :count) "
+                "ON CONFLICT (source_type, source_id) "
+                "DO UPDATE SET delta_token = :token, "
+                "  last_sync_at = now(), "
+                "  sync_status = 'completed', "
+                "  items_synced = :count"
+            ),
+            {
+                "sid": source_id,
+                "token": datetime.now(UTC).isoformat(),
+                "count": stats["synced"],
+            },
+        )
+        await session.commit()
 
     return stats
 
@@ -476,6 +578,95 @@ def _notion_title(page: dict[str, Any]) -> str:
             titles = prop.get("title", [])
             return "".join(t.get("plain_text", "") for t in titles) or "Untitled"
     return "Untitled"
+
+
+def _notion_metadata(page: dict[str, Any]) -> dict[str, Any]:
+    """Extract rich metadata from a Notion page object.
+
+    Pulls: author, last_edited_by, timestamps, status, tags,
+    parent page path — everything useful for quality/governance.
+    """
+    meta: dict[str, Any] = {}
+
+    # Timestamps
+    meta["created_time"] = page.get("created_time")
+    meta["last_edited_time"] = page.get("last_edited_time")
+
+    # Author / editor
+    created_by = page.get("created_by", {})
+    if created_by.get("name"):
+        meta["author"] = created_by["name"]
+    elif created_by.get("id"):
+        meta["author"] = created_by["id"]
+
+    edited_by = page.get("last_edited_by", {})
+    if edited_by.get("name"):
+        meta["last_edited_by"] = edited_by["name"]
+
+    # Parent path
+    parent = page.get("parent", {})
+    if parent.get("type") == "page_id":
+        meta["parent_id"] = parent["page_id"]
+    elif parent.get("type") == "database_id":
+        meta["parent_database"] = parent["database_id"]
+
+    # Properties — extract common types
+    props = page.get("properties", {})
+    tags: list[str] = []
+    for prop_name, prop in props.items():
+        ptype = prop.get("type", "")
+
+        if ptype == "status":
+            status_obj = prop.get("status")
+            if status_obj and status_obj.get("name"):
+                meta["status"] = status_obj["name"]
+
+        elif ptype == "select":
+            select_obj = prop.get("select")
+            if select_obj and select_obj.get("name"):
+                meta[prop_name.lower()] = select_obj["name"]
+
+        elif ptype == "multi_select":
+            options = prop.get("multi_select", [])
+            for opt in options:
+                if opt.get("name"):
+                    tags.append(opt["name"])
+
+        elif ptype == "people":
+            people = prop.get("people", [])
+            names = [p.get("name", "") for p in people if p.get("name")]
+            if names:
+                meta[f"property_{prop_name.lower()}"] = ", ".join(names)
+
+        elif ptype == "date":
+            date_obj = prop.get("date")
+            if date_obj and date_obj.get("start"):
+                meta[f"date_{prop_name.lower()}"] = date_obj["start"]
+
+        elif ptype == "url":
+            url_val = prop.get("url")
+            if url_val:
+                meta[f"url_{prop_name.lower()}"] = url_val
+
+        elif ptype == "rich_text":
+            texts = prop.get("rich_text", [])
+            text_val = "".join(t.get("plain_text", "") for t in texts)
+            if text_val and len(text_val) < 200:
+                meta[prop_name.lower()] = text_val
+
+    if tags:
+        meta["tags"] = tags
+
+    # Build parent path string
+    parent_parts: list[str] = []
+    if meta.get("parent_database"):
+        parent_parts.append(f"db:{meta['parent_database'][:8]}")
+    if meta.get("parent_id"):
+        parent_parts.append(f"page:{meta['parent_id'][:8]}")
+    if parent_parts:
+        meta["parent_path"] = " > ".join(parent_parts)
+
+    return meta
 
 
 def _notion_blocks_to_text(blocks: list[dict[str, Any]]) -> str:
