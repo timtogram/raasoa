@@ -105,7 +105,10 @@ async def ingest_document(
 
     await session.refresh(doc)
 
-    # Audit log
+    # Usage metering + Audit log
+    from raasoa.middleware.metering import track_usage
+    await track_usage(session, tenant_id, "ingest", 1, {"chunks": doc.chunk_count})
+
     from raasoa.middleware.audit import audit
     await audit(
         session, tenant_id, request, "document.ingest",

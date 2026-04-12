@@ -152,6 +152,12 @@ async def retrieve(
             routed_to = "rag"
             routing_reason = routing.reason
 
+    # ── Usage metering ────────────────────────────────────
+    from raasoa.middleware.metering import track_usage
+    await track_usage(
+        session, tenant_id, "retrieve", 1, {"routed_to": routed_to},
+    )
+
     # ── Confidence: boost if index hit ───────────────────
     if index_hits and not confidence_info:
         confidence_info = ConfidenceInfo(

@@ -11,6 +11,7 @@ from raasoa.api.claim_clusters import router as claim_clusters_router
 from raasoa.api.documents import router as documents_router
 from raasoa.api.health import router as health_router
 from raasoa.api.ingestion import router as ingestion_router
+from raasoa.api.keys import router as keys_router
 from raasoa.api.metrics import router as metrics_router
 from raasoa.api.quality import router as quality_router
 from raasoa.api.retrieval import router as retrieval_router
@@ -51,6 +52,7 @@ app.include_router(acl_router)
 app.include_router(analytics_router)
 app.include_router(synthesis_router)
 app.include_router(sources_router)
+app.include_router(keys_router)
 app.include_router(claim_clusters_router)
 app.include_router(source_tree_router)
 app.include_router(webhooks_router)

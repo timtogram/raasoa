@@ -17,6 +17,85 @@ from raasoa.middleware.auth import resolve_tenant
 router = APIRouter(prefix="/v1/analytics", tags=["analytics"])
 
 
+@router.get("/usage")
+async def usage_summary(
+    request: Request,
+    period: str = "month",
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Usage summary for the current tenant.
+
+    Period: 'day', 'week', 'month' (default).
+    """
+    tenant_id = resolve_tenant(request)
+
+    interval = {"day": "1 day", "week": "7 days", "month": "30 days"}.get(
+        period, "30 days",
+    )
+
+    result = await session.execute(
+        text(
+            f"SELECT event_type, "
+            f"  SUM(quantity) AS total, "
+            f"  COUNT(*) AS event_count "
+            f"FROM usage_events "
+            f"WHERE tenant_id = :tid "
+            f"  AND created_at > now() - interval '{interval}' "
+            f"GROUP BY event_type "
+            f"ORDER BY total DESC"
+        ),
+        {"tid": tenant_id},
+    )
+    usage = {
+        r.event_type: {"total": r.total, "events": r.event_count}
+        for r in result.fetchall()
+    }
+
+    # Get quota status
+    quota_result = await session.execute(
+        text(
+            "SELECT plan, max_documents, max_queries_per_month, "
+            "  max_sources FROM tenants WHERE id = :tid"
+        ),
+        {"tid": tenant_id},
+    )
+    quota = quota_result.first()
+
+    # Current counts
+    counts_result = await session.execute(
+        text(
+            "SELECT "
+            "  (SELECT COUNT(*) FROM documents "
+            "   WHERE tenant_id = :tid AND status != 'deleted') "
+            "   AS documents, "
+            "  (SELECT COUNT(*) FROM sources "
+            "   WHERE tenant_id = :tid) AS sources"
+        ),
+        {"tid": tenant_id},
+    )
+    counts = counts_result.first()
+
+    return {
+        "period": period,
+        "usage": usage,
+        "quota": {
+            "plan": quota.plan if quota else "free",
+            "documents": {
+                "current": counts.documents if counts else 0,
+                "max": quota.max_documents if quota else 100,
+            },
+            "queries_per_month": {
+                "current": usage.get("retrieve", {}).get("total", 0),
+                "max": quota.max_queries_per_month if quota else 1000,
+            },
+            "sources": {
+                "current": counts.sources if counts else 0,
+                "max": quota.max_sources if quota else 1,
+            },
+        },
+    }
+
+
 @router.get("/audit")
 async def audit_log(
     request: Request,
