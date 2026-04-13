@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 from raasoa.schemas.quality import (
     ConflictCandidateResponse,
     ConflictResolution,
@@ -30,7 +30,7 @@ async def get_document_quality(
     session: AsyncSession = Depends(get_session),
 ) -> QualityReport:
     """Get quality report for a document (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     doc_result = await session.execute(
         text(
@@ -83,7 +83,7 @@ async def list_quality_findings(
     session: AsyncSession = Depends(get_session),
 ) -> list[QualityFindingResponse]:
     """List quality findings (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     conditions = ["d.tenant_id = :tid"]
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit, "off": offset}
@@ -128,7 +128,7 @@ async def list_conflicts(
     session: AsyncSession = Depends(get_session),
 ) -> list[ConflictCandidateResponse]:
     """List conflict candidates (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     conditions = ["tenant_id = :tid"]
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit, "off": offset}
@@ -170,7 +170,7 @@ async def resolve_conflict(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Resolve a conflict (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     # Verify conflict belongs to tenant
     result = await session.execute(
@@ -303,7 +303,7 @@ async def list_reviews(
     session: AsyncSession = Depends(get_session),
 ) -> list[ReviewTaskResponse]:
     """List review tasks (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     conditions = ["tenant_id = :tid"]
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit, "off": offset}
@@ -345,7 +345,7 @@ async def approve_review(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Approve a review task (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -391,7 +391,7 @@ async def reject_review(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Reject a review task (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(

@@ -19,13 +19,17 @@ class FakeRequest:
 
 
 class TestResolveTenanAuthDisabled:
-    def test_returns_default_tenant_when_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_default_tenant_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         monkeypatch.setattr("raasoa.middleware.auth.settings.auth_enabled", False)
         req = FakeRequest()
         tid = resolve_tenant(req)  # type: ignore[arg-type]
         assert tid == DEFAULT_TENANT
 
-    def test_returns_default_regardless_of_headers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_default_regardless_of_headers(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         monkeypatch.setattr("raasoa.middleware.auth.settings.auth_enabled", False)
         req = FakeRequest({"authorization": "Bearer garbage"})
         tid = resolve_tenant(req)  # type: ignore[arg-type]
@@ -37,42 +41,58 @@ _AUTH = "raasoa.middleware.auth.settings"
 
 
 class TestResolveTenanAuthEnabled:
-    def test_missing_key_returns_401(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_key_returns_401(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         monkeypatch.setattr(f"{_AUTH}.auth_enabled", True)
         monkeypatch.setattr(f"{_AUTH}.api_keys", f"sk-test:{_TEST_TENANT}")
-        monkeypatch.setattr("raasoa.middleware.auth._key_map", None)
+        monkeypatch.setattr("raasoa.middleware.auth._env_key_map", None)
 
         from fastapi import HTTPException
+
         with pytest.raises(HTTPException) as exc:
             resolve_tenant(FakeRequest())  # type: ignore[arg-type]
         assert exc.value.status_code == 401
 
-    def test_wrong_key_returns_401(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_wrong_key_returns_401(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         monkeypatch.setattr(f"{_AUTH}.auth_enabled", True)
         monkeypatch.setattr(f"{_AUTH}.api_keys", f"sk-valid:{_TEST_TENANT}")
-        monkeypatch.setattr("raasoa.middleware.auth._key_map", None)
+        monkeypatch.setattr("raasoa.middleware.auth._env_key_map", None)
 
         from fastapi import HTTPException
+
         with pytest.raises(HTTPException) as exc:
-            resolve_tenant(FakeRequest({"authorization": "Bearer sk-wrong"}))  # type: ignore[arg-type]
+            resolve_tenant(
+                FakeRequest({"authorization": "Bearer sk-wrong"})  # type: ignore[arg-type]
+            )
         assert exc.value.status_code == 401
 
-    def test_correct_key_returns_tenant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_correct_key_returns_tenant(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         tid = "11111111-1111-1111-1111-111111111111"
-        monkeypatch.setattr("raasoa.middleware.auth.settings.auth_enabled", True)
-        monkeypatch.setattr("raasoa.middleware.auth.settings.api_keys", f"sk-good:{tid}")
-        monkeypatch.setattr("raasoa.middleware.auth._key_map", None)
+        monkeypatch.setattr(f"{_AUTH}.auth_enabled", True)
+        monkeypatch.setattr(f"{_AUTH}.api_keys", f"sk-good:{tid}")
+        monkeypatch.setattr("raasoa.middleware.auth._env_key_map", None)
 
-        result = resolve_tenant(FakeRequest({"authorization": "Bearer sk-good"}))  # type: ignore[arg-type]
+        result = resolve_tenant(
+            FakeRequest({"authorization": "Bearer sk-good"})  # type: ignore[arg-type]
+        )
         assert result == uuid.UUID(tid)
 
-    def test_x_api_key_header_works(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_x_api_key_header_works(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         tid = "22222222-2222-2222-2222-222222222222"
-        monkeypatch.setattr("raasoa.middleware.auth.settings.auth_enabled", True)
-        monkeypatch.setattr("raasoa.middleware.auth.settings.api_keys", f"sk-alt:{tid}")
-        monkeypatch.setattr("raasoa.middleware.auth._key_map", None)
+        monkeypatch.setattr(f"{_AUTH}.auth_enabled", True)
+        monkeypatch.setattr(f"{_AUTH}.api_keys", f"sk-alt:{tid}")
+        monkeypatch.setattr("raasoa.middleware.auth._env_key_map", None)
 
-        result = resolve_tenant(FakeRequest({"x-api-key": "sk-alt"}))  # type: ignore[arg-type]
+        result = resolve_tenant(
+            FakeRequest({"x-api-key": "sk-alt"})  # type: ignore[arg-type]
+        )
         assert result == uuid.UUID(tid)
 
 
@@ -91,6 +111,7 @@ class TestWebhookSecret:
         monkeypatch.setattr(f"{_AUTH}.auth_enabled", True)
 
         from fastapi import HTTPException
+
         with pytest.raises(HTTPException) as exc:
             verify_webhook_secret(FakeRequest())  # type: ignore[arg-type]
         assert exc.value.status_code == 401
@@ -108,6 +129,7 @@ class TestWebhookSecret:
         monkeypatch.setattr(f"{_AUTH}.webhook_secret", "whsec-real")
 
         from fastapi import HTTPException
+
         req = FakeRequest({"x-webhook-secret": "whsec-fake"})
         with pytest.raises(HTTPException) as exc:
             verify_webhook_secret(req)  # type: ignore[arg-type]

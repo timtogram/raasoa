@@ -123,7 +123,9 @@ async def ingest_file(
     # 6. Compute chunk hashes
     chunk_hashes = [content_hash(c.text) for c in chunk_results]
 
-    # 7. Embed all chunks
+    # 7. Embed all chunks (set tenant for metering)
+    if hasattr(embedding_provider, "_current_tenant_id"):
+        embedding_provider._current_tenant_id = str(tenant_id)
     texts = [c.text for c in chunk_results]
     embeddings = await embedding_provider.embed(texts)
 

@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 
 router = APIRouter(prefix="/v1/keys", tags=["api-keys"])
 
@@ -58,7 +58,7 @@ async def create_key(
     session: AsyncSession = Depends(get_session),
 ) -> KeyCreated:
     """Create a new API key. The full key is shown only once."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     # Generate key
     raw_key = f"sk-{secrets.token_urlsafe(32)}"
@@ -104,7 +104,7 @@ async def list_keys(
     session: AsyncSession = Depends(get_session),
 ) -> list[KeyResponse]:
     """List all API keys for the tenant (no secrets shown)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -136,7 +136,7 @@ async def revoke_key(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Revoke (deactivate) an API key."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(

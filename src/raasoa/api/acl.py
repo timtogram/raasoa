@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 
 router = APIRouter(prefix="/v1", tags=["acl"])
 
@@ -36,7 +36,7 @@ async def create_acl_entry(
     session: AsyncSession = Depends(get_session),
 ) -> AclEntryResponse:
     """Create an ACL entry (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     doc_result = await session.execute(
         text(
@@ -85,7 +85,7 @@ async def list_acl_entries(
     session: AsyncSession = Depends(get_session),
 ) -> list[AclEntryResponse]:
     """List ACL entries for a document (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     # Verify document belongs to tenant
     doc_result = await session.execute(
@@ -126,7 +126,7 @@ async def delete_acl_entry(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Delete an ACL entry (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     # Join with documents to verify tenant ownership
     result = await session.execute(

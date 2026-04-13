@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 from raasoa.schemas.document import (
     ChunkDetail,
     DocumentSummary,
@@ -38,7 +38,7 @@ async def list_documents(
     session: AsyncSession = Depends(get_session),
 ) -> PaginatedDocuments:
     """List documents with cursor-based pagination."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit + 1}
 
     if cursor:
@@ -110,7 +110,7 @@ async def get_document(
     session: AsyncSession = Depends(get_session),
 ) -> DocumentWithChunks:
     """Get document details with all chunks (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -182,7 +182,7 @@ async def delete_document(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Soft-delete a document (tenant-scoped)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(

@@ -17,7 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/sources", tags=["sources"])
@@ -62,7 +62,13 @@ async def create_source(
     session: AsyncSession = Depends(get_session),
 ) -> SourceResponse:
     """Create a new data source connection."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
+
+    # Quota check: source limit
+    from raasoa.middleware.metering import check_quota
+    allowed, reason = await check_quota(session, tenant_id, "sources")
+    if not allowed:
+        raise HTTPException(status_code=429, detail=reason)
 
     source_id = uuid.uuid4()
     await session.execute(
@@ -97,7 +103,7 @@ async def list_sources(
     session: AsyncSession = Depends(get_session),
 ) -> list[SourceResponse]:
     """List all configured data sources."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -135,7 +141,7 @@ async def delete_source(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     """Delete a data source (does NOT delete its documents)."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -162,7 +168,7 @@ async def sync_source(
     Reads the source's connection config and syncs documents.
     Currently supports: notion, webhook (manual push).
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(

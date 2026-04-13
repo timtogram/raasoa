@@ -62,6 +62,7 @@ async def extract_claims_from_text(
     text: str,
     base_url: str = settings.ollama_base_url,
     model: str = settings.ollama_chat_model,
+    meter_tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Call Ollama to extract claims from a text passage."""
     prompt = CLAIM_EXTRACTION_PROMPT.format(text=text[:4000])
@@ -131,6 +132,26 @@ async def extract_claims_from_text(
                         "valid_from": str(c["valid_from"]) if c.get("valid_from") else None,
                         "valid_until": str(c["valid_until"]) if c.get("valid_until") else None,
                     })
+            # Track LLM call for metering
+            if meter_tenant_id:
+                try:
+                    import uuid as _uuid
+
+                    from raasoa.db import async_session
+                    from raasoa.middleware.metering import track_usage
+
+                    async with async_session() as meter_session:
+                        await track_usage(
+                            meter_session,
+                            _uuid.UUID(meter_tenant_id),
+                            "llm_call",
+                            1,
+                            {"model": model, "purpose": "claim_extraction"},
+                        )
+                        await meter_session.commit()
+                except Exception:
+                    pass
+
             return valid_claims
 
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
@@ -171,7 +192,9 @@ async def extract_and_store_claims(
         chunk_id: uuid.UUID, chunk_text: str,
     ) -> list[dict[str, Any]]:
         async with semaphore:
-            raw = await extract_claims_from_text(chunk_text)
+            raw = await extract_claims_from_text(
+                chunk_text, meter_tenant_id=str(tenant_id),
+            )
             return [
                 {**rc, "chunk_id": chunk_id, "evidence": chunk_text[:500]}
                 for rc in raw

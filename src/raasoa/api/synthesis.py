@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 
 router = APIRouter(prefix="/v1/synthesis", tags=["synthesis"])
 
@@ -47,7 +47,7 @@ async def list_syntheses(
     session: AsyncSession = Depends(get_session),
 ) -> list[SynthesisResponse]:
     """List all synthesized knowledge topics."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -83,7 +83,7 @@ async def get_synthesis(
     session: AsyncSession = Depends(get_session),
 ) -> SynthesisResponse:
     """Get the synthesized knowledge for a specific topic."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -121,7 +121,7 @@ async def build_knowledge_index(
     The index enables sub-5ms factual lookups without embedding.
     Run this after ingesting new documents or resolving conflicts.
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     from raasoa.retrieval.knowledge_index import build_index
 
@@ -143,7 +143,7 @@ async def curate_knowledge(
     This is the "maintenance" step — run periodically or after
     large ingestion batches to keep the knowledge base healthy.
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     from raasoa.quality.curator import curate
 
@@ -162,7 +162,7 @@ async def compile_synthesis(
     Compiles claims into synthesized summaries. If topic is specified,
     compiles only that topic. Otherwise compiles all topics with claims.
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     from raasoa.quality.synthesis import synthesize_all_topics, synthesize_topic
 

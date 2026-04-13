@@ -1,54 +1,64 @@
 """Tests for API key authentication middleware."""
 
+import hashlib
 import uuid
 from unittest.mock import patch
 
-from raasoa.middleware.auth import DEFAULT_TENANT, _get_key_map
+from raasoa.middleware.auth import DEFAULT_TENANT, _get_env_key_map, _hash_key
 
 
-def test_key_map_parses_correctly() -> None:
-    """API keys are correctly parsed into tenant map."""
-    import raasoa.middleware.auth as auth_mod
+class TestHashKey:
+    def test_is_sha256(self) -> None:
+        key = "sk-test-key-123"
+        expected = hashlib.sha256(key.encode()).hexdigest()
+        assert _hash_key(key) == expected
 
-    auth_mod._key_map = None  # Reset cache
+    def test_deterministic(self) -> None:
+        assert _hash_key("sk-key") == _hash_key("sk-key")
 
-    with patch.object(
-        auth_mod, "settings",
-        api_keys="sk-test:00000000-0000-0000-0000-000000000001,"
-        "sk-other:00000000-0000-0000-0000-000000000002",
-    ):
-        key_map = _get_key_map()
-        assert "sk-test" in key_map
-        assert key_map["sk-test"] == uuid.UUID(
-            "00000000-0000-0000-0000-000000000001"
-        )
-        assert "sk-other" in key_map
-
-    auth_mod._key_map = None  # Reset after test
+    def test_different_keys(self) -> None:
+        assert _hash_key("key-a") != _hash_key("key-b")
 
 
-def test_key_map_handles_empty_config() -> None:
-    import raasoa.middleware.auth as auth_mod
+class TestEnvKeyMap:
+    def test_parses_correctly(self) -> None:
+        import raasoa.middleware.auth as auth_mod
 
-    auth_mod._key_map = None
-    with patch.object(auth_mod, "settings", api_keys=""):
-        key_map = _get_key_map()
-        assert key_map == {}
-    auth_mod._key_map = None
+        auth_mod._env_key_map = None
+        with patch.object(
+            auth_mod, "settings",
+            api_keys="sk-test:00000000-0000-0000-0000-000000000001,"
+            "sk-other:00000000-0000-0000-0000-000000000002",
+        ):
+            key_map = _get_env_key_map()
+            assert "sk-test" in key_map
+            assert key_map["sk-test"] == uuid.UUID(
+                "00000000-0000-0000-0000-000000000001"
+            )
+            assert "sk-other" in key_map
+        auth_mod._env_key_map = None
 
+    def test_handles_empty(self) -> None:
+        import raasoa.middleware.auth as auth_mod
 
-def test_key_map_skips_invalid_entries() -> None:
-    import raasoa.middleware.auth as auth_mod
+        auth_mod._env_key_map = None
+        with patch.object(auth_mod, "settings", api_keys=""):
+            key_map = _get_env_key_map()
+            assert key_map == {}
+        auth_mod._env_key_map = None
 
-    auth_mod._key_map = None
-    with patch.object(
-        auth_mod, "settings",
-        api_keys="sk-good:00000000-0000-0000-0000-000000000001,bad-entry,",
-    ):
-        key_map = _get_key_map()
-        assert "sk-good" in key_map
-        assert len(key_map) == 1
-    auth_mod._key_map = None
+    def test_skips_invalid(self) -> None:
+        import raasoa.middleware.auth as auth_mod
+
+        auth_mod._env_key_map = None
+        with patch.object(
+            auth_mod, "settings",
+            api_keys="sk-good:00000000-0000-0000-0000-000000000001,bad,",
+        ):
+            key_map = _get_env_key_map()
+            assert "sk-good" in key_map
+            assert len(key_map) == 1
+        auth_mod._env_key_map = None
 
 
 def test_default_tenant_is_valid_uuid() -> None:

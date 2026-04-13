@@ -79,9 +79,11 @@ class OllamaEmbeddingProvider:
                         results.append([0.0] * self._dimensions)
         return results
 
+    # Track total calls for metering (set by pipeline before calling embed)
+    _current_tenant_id: str | None = None
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         all_embeddings: list[list[float]] = []
-        # Truncate very long texts
         texts = [t[:8000] if len(t) > 8000 else t for t in texts]
 
         async with httpx.AsyncClient(timeout=300.0) as client:
@@ -89,5 +91,25 @@ class OllamaEmbeddingProvider:
                 batch = texts[i : i + BATCH_SIZE]
                 embeddings = await self._embed_batch(client, batch)
                 all_embeddings.extend(embeddings)
+
+        # Metering: track embedding API calls (best-effort)
+        if self._current_tenant_id:
+            try:
+                import uuid
+
+                from raasoa.db import async_session
+                from raasoa.middleware.metering import track_usage
+
+                async with async_session() as session:
+                    await track_usage(
+                        session,
+                        uuid.UUID(self._current_tenant_id),
+                        "embedding_call",
+                        len(texts),
+                        {"model": self._model},
+                    )
+                    await session.commit()
+            except Exception:
+                pass  # Best-effort
 
         return all_embeddings

@@ -23,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 
 router = APIRouter(prefix="/v1", tags=["claims"])
 
@@ -39,7 +39,7 @@ async def list_claim_clusters(
     Groups claims by normalized predicate, returns clusters where
     there are at least `min_variants` different values.
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -113,7 +113,7 @@ async def get_cluster_detail(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Get all claims for a specific predicate across all documents."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(

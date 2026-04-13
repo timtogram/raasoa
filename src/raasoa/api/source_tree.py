@@ -16,7 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 
 router = APIRouter(prefix="/v1", tags=["source-tree"])
 
@@ -31,7 +31,7 @@ async def source_tree(
     Returns sources with their documents, quality scores, and
     conflict counts — organized as a tree.
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     # Source-level aggregation
     result = await session.execute(

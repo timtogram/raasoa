@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 
 router = APIRouter(prefix="/v1/analytics", tags=["analytics"])
 
@@ -27,7 +27,7 @@ async def usage_summary(
 
     Period: 'day', 'week', 'month' (default).
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     interval = {"day": "1 day", "week": "7 days", "month": "30 days"}.get(
         period, "30 days",
@@ -105,7 +105,7 @@ async def audit_log(
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """Query the audit log. Filterable by action and resource type."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     conditions = ["tenant_id = :tid"]
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit}
@@ -151,7 +151,7 @@ async def quality_by_source(
 
     Shows which data sources produce the best/worst quality content.
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -194,7 +194,7 @@ async def contradiction_hotspots(
 
     Answers: "Where is our knowledge most unstable?"
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(
@@ -240,7 +240,7 @@ async def claim_stability(
 
     Shows how often claims get superseded — indicates knowledge churn.
     """
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
 
     result = await session.execute(
         text(

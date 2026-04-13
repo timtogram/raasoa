@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from raasoa.config import settings
 from raasoa.db import get_session
 from raasoa.ingestion.pipeline import ingest_file
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 from raasoa.middleware.rate_limit import get_ingest_limiter
 from raasoa.models.source import Source
 from raasoa.models.tenant import Tenant
@@ -61,8 +61,14 @@ async def ingest_document(
     session: AsyncSession = Depends(get_session),
 ) -> IngestResponse:
     """Upload and ingest a document with quality assessment."""
-    tenant_id = resolve_tenant(request)
+    tenant_id = await resolve_tenant_async(request)
     get_ingest_limiter().check(str(tenant_id))
+
+    # Quota check: document limit
+    from raasoa.middleware.metering import check_quota
+    allowed, reason = await check_quota(session, tenant_id, "documents")
+    if not allowed:
+        raise HTTPException(status_code=429, detail=reason)
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from raasoa.config import settings
 from raasoa.db import get_session
 from raasoa.ingestion.pipeline import ingest_file
-from raasoa.middleware.auth import resolve_tenant, verify_webhook_secret
+from raasoa.middleware.auth import resolve_tenant_async, verify_webhook_secret
 from raasoa.models.source import Source
 from raasoa.providers.factory import get_embedding_provider
 
@@ -66,7 +66,7 @@ async def webhook_ingest(
     # Auth: try API key first, fall back to webhook secret
     if settings.auth_enabled:
         try:
-            tenant_id = resolve_tenant(request)
+            tenant_id = await resolve_tenant_async(request)
         except HTTPException:
             # API key failed — try webhook secret
             verify_webhook_secret(request)
@@ -74,7 +74,7 @@ async def webhook_ingest(
             from raasoa.middleware.auth import DEFAULT_TENANT
             tenant_id = DEFAULT_TENANT
     else:
-        tenant_id = resolve_tenant(request)
+        tenant_id = await resolve_tenant_async(request)
 
     # Ensure source exists
     result = await session.execute(

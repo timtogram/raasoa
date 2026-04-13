@@ -12,12 +12,12 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant
+from raasoa.middleware.auth import resolve_tenant_async
 from raasoa.middleware.rate_limit import get_retrieve_limiter
 from raasoa.providers.factory import get_embedding_provider
 from raasoa.retrieval.confidence import compute_confidence
@@ -48,8 +48,14 @@ async def retrieve(
     session: AsyncSession = Depends(get_session),
 ) -> RetrieveResponse:
     """3-layer combined retrieval: Index → Structured → Hybrid Search."""
-    tenant_id = resolve_tenant(http_request)
+    tenant_id = await resolve_tenant_async(http_request)
     get_retrieve_limiter().check(str(tenant_id))
+
+    # Quota check: monthly query limit
+    from raasoa.middleware.metering import check_quota
+    allowed, reason = await check_quota(session, tenant_id, "queries")
+    if not allowed:
+        raise HTTPException(status_code=429, detail=reason)
 
     start_time = time.monotonic()
 
@@ -229,7 +235,7 @@ async def submit_feedback(
 
     Positive feedback boosts the chunk for similar future queries.
     """
-    tenant_id = resolve_tenant(http_request)
+    tenant_id = await resolve_tenant_async(http_request)
 
     await store_feedback(
         session,
