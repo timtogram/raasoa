@@ -237,6 +237,18 @@ async def conflicts_list(
     )
 
 
+@router.get("/account", response_class=HTMLResponse)
+async def account_page(
+    request: Request,
+) -> Response:
+    """Account + API keys + usage page."""
+    if redir := _check_auth(request):
+        return redir
+    return templates.TemplateResponse(
+        request, "account.html", {"active": "account"},
+    )
+
+
 @router.get("/analytics", response_class=HTMLResponse)
 async def analytics_page(
     request: Request,
@@ -435,6 +447,228 @@ async def dashboard_sync_source(
     )
 
     return JSONResponse(content=stats)
+
+
+# ── Dashboard API: Tenant, Keys, Usage ──────────────────
+
+
+@router.get("/api/tenant")
+async def dashboard_tenant_proxy(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Tenant info for the dashboard (uses default tenant in dev)."""
+    if _check_auth(request):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"},
+        )
+
+    import uuid as _u
+
+    tid = _u.UUID(DEFAULT_TENANT)
+
+    result = await session.execute(
+        text(
+            "SELECT name, plan, max_documents, max_queries_per_month, "
+            "max_sources FROM tenants WHERE id = :tid"
+        ),
+        {"tid": tid},
+    )
+    tenant = result.first()
+    if not tenant:
+        # Return default for first-run scenarios
+        return JSONResponse(content={
+            "id": str(tid), "name": "Default Tenant", "plan": "free",
+            "quota": {
+                "max_documents": 100,
+                "max_queries_per_month": 1000,
+                "max_sources": 1,
+            },
+            "usage_this_month": {
+                "documents": 0, "queries": 0, "sources": 0,
+            },
+        })
+
+    counts_result = await session.execute(
+        text(
+            "SELECT "
+            "(SELECT COUNT(*) FROM documents WHERE tenant_id = :tid "
+            " AND status != 'deleted') AS docs, "
+            "(SELECT COUNT(*) FROM sources WHERE tenant_id = :tid) AS src, "
+            "(SELECT COALESCE(SUM(quantity), 0) FROM usage_events "
+            " WHERE tenant_id = :tid AND event_type = 'retrieve' "
+            " AND created_at > date_trunc('month', now())) AS queries"
+        ),
+        {"tid": tid},
+    )
+    counts = counts_result.first()
+
+    return JSONResponse(content={
+        "id": str(tid),
+        "name": tenant.name,
+        "plan": tenant.plan or "free",
+        "quota": {
+            "max_documents": tenant.max_documents or 100,
+            "max_queries_per_month": tenant.max_queries_per_month or 1000,
+            "max_sources": tenant.max_sources or 1,
+        },
+        "usage_this_month": {
+            "documents": counts.docs if counts else 0,
+            "queries": int(counts.queries) if counts else 0,
+            "sources": counts.src if counts else 0,
+        },
+    })
+
+
+@router.get("/api/keys")
+async def dashboard_keys_list(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """List API keys for the current tenant."""
+    if _check_auth(request):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"},
+        )
+
+    import uuid as _u
+
+    tid = _u.UUID(DEFAULT_TENANT)
+
+    result = await session.execute(
+        text(
+            "SELECT id, name, key_prefix, is_active, "
+            "created_at, last_used_at "
+            "FROM api_keys WHERE tenant_id = :tid "
+            "ORDER BY created_at DESC"
+        ),
+        {"tid": tid},
+    )
+    keys = [
+        {
+            "id": str(r.id),
+            "name": r.name,
+            "key_prefix": r.key_prefix,
+            "is_active": r.is_active,
+            "created_at": str(r.created_at) if r.created_at else None,
+            "last_used_at": str(r.last_used_at) if r.last_used_at else None,
+        }
+        for r in result.fetchall()
+    ]
+    return JSONResponse(content=keys)
+
+
+@router.post("/api/keys")
+async def dashboard_keys_create(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Create a new API key for the current tenant."""
+    if _check_auth(request):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"},
+        )
+
+    import hashlib
+    import json as _json_mod
+    import secrets
+    import uuid as _u
+
+    body = await request.json()
+    name = body.get("name", "Unnamed Key")
+    scopes = body.get("scopes", ["all"])
+
+    tid = _u.UUID(DEFAULT_TENANT)
+    raw_key = f"sk-{secrets.token_urlsafe(32)}"
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    key_prefix = f"{raw_key[:7]}...{raw_key[-4:]}"
+    key_id = _u.uuid4()
+
+    await session.execute(
+        text(
+            "INSERT INTO api_keys "
+            "(id, tenant_id, key_hash, key_prefix, name, scopes) "
+            "VALUES (:id, :tid, :hash, :prefix, :name, "
+            " CAST(:scopes AS jsonb))"
+        ),
+        {
+            "id": key_id, "tid": tid, "hash": key_hash,
+            "prefix": key_prefix, "name": name,
+            "scopes": _json_mod.dumps(scopes),
+        },
+    )
+    await session.commit()
+
+    return JSONResponse(content={
+        "id": str(key_id),
+        "name": name,
+        "key": raw_key,
+        "key_prefix": key_prefix,
+    })
+
+
+@router.delete("/api/keys/{key_id}")
+async def dashboard_keys_revoke(
+    request: Request,
+    key_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Revoke (deactivate) an API key."""
+    if _check_auth(request):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"},
+        )
+
+    import uuid as _u
+
+    tid = _u.UUID(DEFAULT_TENANT)
+
+    await session.execute(
+        text(
+            "UPDATE api_keys SET is_active = false "
+            "WHERE id = :kid AND tenant_id = :tid"
+        ),
+        {"kid": _u.UUID(key_id), "tid": tid},
+    )
+    await session.commit()
+    return JSONResponse(content={"status": "revoked"})
+
+
+@router.get("/api/usage")
+async def dashboard_usage_proxy(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Usage summary for the current tenant (last 30 days)."""
+    if _check_auth(request):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"},
+        )
+
+    import uuid as _u
+
+    tid = _u.UUID(DEFAULT_TENANT)
+
+    result = await session.execute(
+        text(
+            "SELECT event_type, COUNT(*) AS events, "
+            "SUM(quantity) AS total "
+            "FROM usage_events "
+            "WHERE tenant_id = :tid "
+            "AND created_at > now() - interval '30 days' "
+            "GROUP BY event_type"
+        ),
+        {"tid": tid},
+    )
+
+    usage = {
+        r.event_type: {
+            "events": r.events,
+            "total": int(r.total) if r.total else 0,
+        }
+        for r in result.fetchall()
+    }
+    return JSONResponse(content={"usage": usage, "period": "30 days"})
 
 
 @router.post("/api/ingest")

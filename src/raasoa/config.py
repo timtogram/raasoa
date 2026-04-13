@@ -67,6 +67,7 @@ class Settings(BaseSettings):
 
     # Authentication
     auth_enabled: bool = True
+    signup_enabled: bool = True  # Allow public signup (SaaS mode)
     api_keys: str = ""  # comma-separated "key:tenant_id" pairs
     webhook_secret: str = ""  # shared secret for webhook authentication
     dashboard_password: str = ""  # password for dashboard access (empty = no dashboard auth)

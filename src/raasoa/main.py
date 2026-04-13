@@ -18,6 +18,7 @@ from raasoa.api.retrieval import router as retrieval_router
 from raasoa.api.source_tree import router as source_tree_router
 from raasoa.api.sources import router as sources_router
 from raasoa.api.synthesis import router as synthesis_router
+from raasoa.api.tenants import router as tenants_router
 from raasoa.api.webhooks import router as webhooks_router
 from raasoa.config import settings
 
@@ -53,6 +54,7 @@ app.include_router(analytics_router)
 app.include_router(synthesis_router)
 app.include_router(sources_router)
 app.include_router(keys_router)
+app.include_router(tenants_router)
 app.include_router(claim_clusters_router)
 app.include_router(source_tree_router)
 app.include_router(webhooks_router)

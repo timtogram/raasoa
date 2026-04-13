@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block title %}Account & API Keys - RAASOA{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-2">Account & API Keys</h1>
+<p class="text-gray-500 mb-6">Manage API keys, view usage, and monitor quotas.</p>
+
+<!-- Tenant Info Card -->
+<div id="tenant-info" class="bg-white rounded-lg border border-gray-200 p-6 mb-6">
+    <div class="flex items-center gap-3 mb-2">
+        <span class="text-sm text-gray-500">Loading tenant info...</span>
+    </div>
+</div>
+
+<!-- Quota Cards -->
+<div id="quota-cards" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8"></div>
+
+<!-- Usage Summary -->
+<h2 class="text-lg font-semibold text-gray-900 mb-4">Usage (Last 30 Days)</h2>
+<div id="usage-summary" class="bg-white rounded-lg border border-gray-200 p-5 mb-8">
+    <p class="text-sm text-gray-500">Loading usage...</p>
+</div>
+
+<!-- API Keys -->
+<div class="flex items-center justify-between mb-4">
+    <h2 class="text-lg font-semibold text-gray-900">API Keys</h2>
+    <button onclick="toggleKeyForm()"
+            class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">
+        + New API Key
+    </button>
+</div>
+
+<div id="new-key-form" class="hidden bg-indigo-50 border border-indigo-200 rounded-lg p-5 mb-6">
+    <h3 class="font-semibold text-gray-900 mb-3">Create API Key</h3>
+    <div class="space-y-3">
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <input type="text" id="key-name" placeholder="e.g. Production API"
+                   class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div class="flex gap-2">
+            <button onclick="createKey()"
+                    class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">
+                Create Key
+            </button>
+            <button onclick="toggleKeyForm()"
+                    class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300">
+                Cancel
+            </button>
+        </div>
+    </div>
+    <div id="new-key-result" class="mt-3"></div>
+</div>
+
+<div id="keys-list" class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <p class="p-5 text-sm text-gray-500">Loading keys...</p>
+</div>
+
+<script>
+async function loadTenantInfo() {
+    try {
+        const resp = await fetch('/dashboard/api/tenant');
+        if (!resp.ok) {
+            document.getElementById('tenant-info').innerHTML =
+                '<p class="text-red-600 text-sm">Could not load tenant info (auth disabled?).</p>';
+            return;
+        }
+        const t = await resp.json();
+        document.getElementById('tenant-info').innerHTML = `
+            <div class="flex items-center justify-between">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-900">${t.name || 'Default Tenant'}</h3>
+                    <p class="text-sm text-gray-500">ID: <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded">${t.id}</code></p>
+                </div>
+                <span class="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-sm font-medium">
+                    ${t.plan} plan
+                </span>
+            </div>
+        `;
+
+        // Quota cards
+        const usage = t.usage_this_month || {};
+        const quota = t.quota || {};
+        const docs_pct = Math.min(100, (usage.documents / quota.max_documents) * 100) || 0;
+        const queries_pct = Math.min(100, (usage.queries / quota.max_queries_per_month) * 100) || 0;
+        const sources_pct = Math.min(100, (usage.sources / quota.max_sources) * 100) || 0;
+
+        document.getElementById('quota-cards').innerHTML = `
+            ${quotaCard('Documents', usage.documents, quota.max_documents, docs_pct)}
+            ${quotaCard('Queries / Month', usage.queries, quota.max_queries_per_month, queries_pct)}
+            ${quotaCard('Sources', usage.sources, quota.max_sources, sources_pct)}
+        `;
+    } catch (err) {
+        document.getElementById('tenant-info').innerHTML =
+            '<p class="text-red-600 text-sm">Error: ' + err.message + '</p>';
+    }
+}
+
+function quotaCard(label, current, max, pct) {
+    const color = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
+    return `
+        <div class="bg-white rounded-lg border border-gray-200 p-5">
+            <p class="text-sm text-gray-500 mb-1">${label}</p>
+            <p class="text-2xl font-bold text-gray-900">${current}</p>
+            <p class="text-xs text-gray-400 mb-2">of ${max} max</p>
+            <div class="w-full bg-gray-200 rounded-full h-2">
+                <div class="bg-${color}-500 h-2 rounded-full" style="width: ${pct}%"></div>
+            </div>
+        </div>
+    `;
+}
+
+async function loadUsage() {
+    try {
+        const resp = await fetch('/dashboard/api/usage');
+        if (!resp.ok) {
+            document.getElementById('usage-summary').innerHTML =
+                '<p class="text-sm text-gray-500">No usage data yet.</p>';
+            return;
+        }
+        const data = await resp.json();
+        const usage = data.usage || {};
+        if (Object.keys(usage).length === 0) {
+            document.getElementById('usage-summary').innerHTML =
+                '<p class="text-sm text-gray-500">No usage recorded yet.</p>';
+            return;
+        }
+        const rows = Object.entries(usage).map(([type, v]) => `
+            <tr class="border-b border-gray-100">
+                <td class="py-2 text-sm text-gray-700">${type}</td>
+                <td class="py-2 text-sm text-right font-medium">${v.total || 0}</td>
+                <td class="py-2 text-sm text-right text-gray-500">${v.events || 0} events</td>
+            </tr>
+        `).join('');
+        document.getElementById('usage-summary').innerHTML = `
+            <table class="w-full"><tbody>${rows}</tbody></table>
+        `;
+    } catch (err) {
+        document.getElementById('usage-summary').innerHTML =
+            '<p class="text-red-600 text-sm">Error: ' + err.message + '</p>';
+    }
+}
+
+async function loadKeys() {
+    try {
+        const resp = await fetch('/dashboard/api/keys');
+        if (!resp.ok) {
+            document.getElementById('keys-list').innerHTML =
+                '<p class="p-5 text-sm text-gray-500">Auth disabled — API keys not needed in dev mode.</p>';
+            return;
+        }
+        const keys = await resp.json();
+        if (!keys.length) {
+            document.getElementById('keys-list').innerHTML =
+                '<p class="p-5 text-sm text-gray-500">No API keys yet. Click "+ New API Key" to create one.</p>';
+            return;
+        }
+        const rows = keys.map(k => `
+            <tr class="border-b border-gray-100 hover:bg-gray-50">
+                <td class="px-5 py-3">
+                    <p class="text-sm font-medium text-gray-900">${k.name}</p>
+                    <code class="text-xs text-gray-500">${k.key_prefix}</code>
+                </td>
+                <td class="px-5 py-3 text-sm text-gray-500">
+                    ${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'Never'}
+                </td>
+                <td class="px-5 py-3">
+                    ${k.is_active
+                        ? '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs">Active</span>'
+                        : '<span class="px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full text-xs">Revoked</span>'}
+                </td>
+                <td class="px-5 py-3 text-right">
+                    ${k.is_active
+                        ? '<button onclick="revokeKey(\\'' + k.id + '\\')" class="text-xs text-red-600 hover:underline">Revoke</button>'
+                        : ''}
+                </td>
+            </tr>
+        `).join('');
+        document.getElementById('keys-list').innerHTML = `
+            <table class="w-full">
+                <thead class="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                        <th class="text-left px-5 py-3 text-xs font-medium text-gray-600">Key</th>
+                        <th class="text-left px-5 py-3 text-xs font-medium text-gray-600">Last Used</th>
+                        <th class="text-left px-5 py-3 text-xs font-medium text-gray-600">Status</th>
+                        <th class="text-right px-5 py-3 text-xs font-medium text-gray-600"></th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    } catch (err) {
+        document.getElementById('keys-list').innerHTML =
+            '<p class="p-5 text-sm text-red-600">Error: ' + err.message + '</p>';
+    }
+}
+
+function toggleKeyForm() {
+    const form = document.getElementById('new-key-form');
+    form.classList.toggle('hidden');
+    if (!form.classList.contains('hidden')) {
+        document.getElementById('key-name').focus();
+    }
+}
+
+async function createKey() {
+    const name = document.getElementById('key-name').value.trim();
+    if (!name) { return; }
+    const resultDiv = document.getElementById('new-key-result');
+    resultDiv.innerHTML = '<p class="text-sm text-gray-500">Creating...</p>';
+
+    try {
+        const resp = await fetch('/dashboard/api/keys', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name, scopes: ['all']})
+        });
+        const data = await resp.json();
+
+        if (resp.ok) {
+            resultDiv.innerHTML = `
+                <div class="bg-green-50 border border-green-300 rounded p-3">
+                    <p class="text-sm font-semibold text-green-800 mb-1">Key created — save it now, it won't be shown again:</p>
+                    <code class="block bg-white border border-green-200 rounded p-2 text-sm font-mono select-all break-all">${data.key}</code>
+                </div>
+            `;
+            document.getElementById('key-name').value = '';
+            loadKeys();
+        } else {
+            resultDiv.innerHTML = '<p class="text-sm text-red-600">' + (data.detail || 'Error') + '</p>';
+        }
+    } catch (err) {
+        resultDiv.innerHTML = '<p class="text-sm text-red-600">' + err.message + '</p>';
+    }
+}
+
+async function revokeKey(keyId) {
+    if (!confirm('Revoke this API key? This cannot be undone.')) { return; }
+    try {
+        const resp = await fetch('/dashboard/api/keys/' + keyId, {method: 'DELETE'});
+        if (resp.ok) loadKeys();
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+loadTenantInfo();
+loadUsage();
+loadKeys();
+</script>
+{% endblock %}
