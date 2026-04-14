@@ -1,7 +1,7 @@
 [project]
 name = "raasoa-client"
 version = "0.1.0"
-description = "Python client for RAASOA — Enterprise RAG as a Service"
+description = "Python client for RAASOA — Knowledge Reliability Layer"
 requires-python = ">=3.10"
 readme = "README.md"
 license = "Apache-2.0"

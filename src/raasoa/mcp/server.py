@@ -664,7 +664,7 @@ def _handle_message(msg: dict[str, Any]) -> dict[str, Any] | None:
             },
             "serverInfo": {
                 "name": "raasoa",
-                "version": "0.1.0",
+                "version": "0.2.0",
             },
         })
 

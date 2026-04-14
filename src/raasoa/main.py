@@ -31,7 +31,7 @@ app = FastAPI(
     title="RAASOA — Knowledge Reliability Layer",
     description="Trusted retrieval with quality gates, contradiction detection, "
     "and governance for enterprise knowledge.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 # CORS — allow all origins in dev, restrict in production via env
@@ -82,7 +82,7 @@ async def global_exception_handler(
 async def root() -> dict[str, Any]:
     return {
         "service": "RAASOA",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "docs": "/docs",
         "health": "/health",
         "dashboard": "/dashboard",

@@ -44,7 +44,7 @@ def _init_otel() -> None:
 
         resource = Resource.create({
             "service.name": os.environ.get("OTEL_SERVICE_NAME", "raasoa"),
-            "service.version": "0.1.0",
+            "service.version": "0.2.0",
         })
 
         provider = TracerProvider(resource=resource)

@@ -252,4 +252,6 @@ uv run mypy src/raasoa --ignore-missing-imports  # 0 errors
 
 ## License
 
-Apache 2.0
+[Business Source License 1.1](LICENSE) — free for self-hosted use. Not permitted as a hosted service without a commercial license. Converts to Apache 2.0 on 2030-04-14.
+
+For commercial licensing inquiries: licensing@mesakumo.com

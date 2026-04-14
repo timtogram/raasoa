@@ -1,7 +1,8 @@
 [project]
 name = "raasoa"
-version = "0.1.0"
-description = "Enterprise RAG as a Service API"
+version = "0.2.0"
+description = "Knowledge Reliability Layer — trusted retrieval with quality gates and governance"
+license = {file = "LICENSE"}
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
