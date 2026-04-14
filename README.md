@@ -12,7 +12,7 @@ RAASOA sits between your source systems and your AI agents. It doesn't just inde
   Confluence  ───►│  Quality Gate +     │──►│ Internal Apps      │
   Notion      ───►│  Claim Extraction + │   │ Claude / Cursor    │
   File Upload ───►│  3-Layer Retrieval  │   │ REST API Clients   │
-  CSV / Excel ───►│                     │   │                    │
+  CSV / Excel ───►│  + LLM Judge        │   │                    │
                   └─────────────────────┘   └──────────────────────┘
 ```
 
@@ -22,10 +22,10 @@ RAASOA sits between your source systems and your AI agents. It doesn't just inde
 |-----------|-------------|----------------|
 | **Quality Visibility** | 7 automated checks produce a quality score (0-1) per document. Low-quality content is quarantined. | Your agent won't cite a half-parsed PDF or an empty template. |
 | **Contradiction Management** | LLM extracts factual claims (Subject→Predicate→Value). Conflicting claims across documents are detected automatically. | When Doc A says "Power BI" and Doc B says "SAP", you know — and decide. |
-| **Human-in-the-Loop** | Conflicts create review tasks. Resolution feeds back into search — superseded docs are excluded. | A human decides which source of truth wins. The system enforces it. |
+| **LLM Judge** | AI evaluates conflicts and auto-resolves high-confidence ones. Configurable threshold — humans handle the rest. | 80% of conflicts resolved automatically. Humans focus on the hard cases. |
 | **3-Layer Retrieval** | Knowledge Index (5ms) → Structured SQL (20ms) → Hybrid Search (500ms). Fastest reliable path wins. | Factual queries get instant answers; semantic queries get full RAG. |
-| **Knowledge Compilation** | LLM curates and normalizes the knowledge index. Synthesizes topic summaries from claims. | System gets smarter over time — every ingestion improves the index. |
-| **Measurable Retrieval** | Built-in eval framework: nDCG, Recall, MRR, Answerability. Gold-set based. | You can prove your retrieval quality with numbers, not guessing. |
+| **Knowledge Compilation** | LLM curates the knowledge index, normalizes predicates, synthesizes topics. Multi-pass extraction. | System gets smarter over time — every ingestion improves the index. |
+| **Measurable Retrieval** | Built-in eval: nDCG, Recall, MRR, Answerability. Embedding cache saves 30-50% of API costs. | Prove your retrieval quality with numbers. |
 
 ## Quickstart
 
@@ -41,85 +41,102 @@ Dashboard: `http://localhost:8000/dashboard`
 
 ## Supported Formats
 
-| Format | Parsing | Tables | Metadata |
-|--------|---------|--------|----------|
-| **PDF** | Text + table extraction | Markdown tables | Author, created, subject |
-| **DOCX** | Paragraphs + headings + styles | Tables → markdown | Author, title |
-| **XLSX** | Multi-sheet, all rows | Per-sheet markdown | Sheet names, row count |
-| **PPTX** | Slides + speaker notes | Shape tables | Slide count |
-| **CSV/TSV** | Rows as key:value + table | Full markdown table | Headers, row/col count |
-| **HTML** | Tag stripping, structure preserved | — | — |
-| **TXT/MD** | Direct | — | — |
+| Format | Parsing | Tables | Metadata | Page Tracking |
+|--------|---------|--------|----------|---------------|
+| **PDF** | Text + table extraction | Markdown tables | Author, created, subject | Page number |
+| **DOCX** | Paragraphs + headings + styles | Tables → markdown | Author, title | — |
+| **XLSX** | Multi-sheet, all rows | Per-sheet markdown | Sheet names, row count | Sheet name |
+| **PPTX** | Slides + speaker notes | Shape tables | Slide count | Slide number |
+| **CSV/TSV** | Rows as key:value + table | Full markdown table | Headers, row/col count | — |
+| **HTML** | Tag stripping, structure preserved | — | — | — |
+| **TXT/MD** | Direct | — | — | — |
 
-Tables are rendered as markdown so chunks and claim extraction understand tabular data.
+Every search result includes the source location: "Page 5", "Slide 3", "Sheet: Revenue".
 
 ## How It Works
 
 ### Ingestion Pipeline
 
 ```
-File/Webhook → Parse → Chunk → Embed → Quality Gate → Claims → Contradictions → Index
+File/Webhook → Parse → Chunk → Embed → Quality Gate → Claims → Contradictions → LLM Judge → Index
 ```
 
 1. **Parse** — extract text, tables, metadata from any supported format
-2. **Chunk** — recursive splitting, 512 tokens, 80 overlap
-3. **Embed** — Ollama (local), OpenAI, Azure OpenAI, Cohere, or custom endpoint
+2. **Chunk** — recursive splitting, 512 tokens, 80 overlap, page tracking
+3. **Embed** — via Embedding Cache (dedup identical texts, saves 30-50% API costs)
 4. **Quality Gate** — 7 checks → score 0-1 → quarantine if bad
-5. **Claim Extraction** — LLM extracts factual claims as structured triples
+5. **Claim Extraction** — LLM extracts factual claims with temporal validity. Multi-pass optional (+15-25% more claims)
 6. **Contradiction Detection** — new claims vs existing knowledge
-7. **Knowledge Index** — auto-rebuilt after every ingestion
-8. **Data Contract Validation** — webhooks are validated before processing (min length, required fields, blocklist patterns)
+7. **LLM Judge** — auto-resolves high-confidence conflicts (configurable threshold)
+8. **Knowledge Index** — auto-rebuilt after every ingestion
+9. **Data Contract Validation** — webhooks validated before processing
 
-### 3-Layer Retrieval with Source Pre-Filtering
-
-Every query passes through three layers — fastest reliable answer wins.
-Optionally pre-filter by `source_type` or `doc_type` for targeted search:
+### Contradiction Detection + LLM Judge
 
 ```
-Query: "What's our primary BI tool?"
-  │
-  ├─ Layer 1: Knowledge Index    (< 5ms,  100% confidence)
-  │  → "SAP Analytics Cloud"     ← direct lookup, no embedding
-  │
-  ├─ Layer 2: Structured SQL     (< 20ms)
-  │  → For "how many documents?" style queries
-  │
-  └─ Layer 3: Hybrid Search      (200-800ms)
-     → Dense + BM25 + Reciprocal Rank Fusion
-     → For semantic/conceptual queries
+Doc A: "Cloud budget is 420,000 EUR" (Jan 2026)
+Doc B: "Cloud budget increased to 550,000 EUR" (March 2026)
+  ↓
+Conflict detected (90% confidence)
+  ↓
+LLM Judge evaluates:
+  - B is newer (March > January)
+  - B from "Board Decision" (higher authority)
+  - Recommendation: keep_b (92% confidence)
+  ↓
+92% > 85% threshold → AUTO-RESOLVED
+Doc A superseded, excluded from search.
 ```
 
-All three results come back in one response — the consuming agent picks the best.
+Configurable: `LLM_JUDGE_AUTO_RESOLVE_THRESHOLD=0.85` (higher = more conservative, 1.01 = never auto-resolve)
 
-### Knowledge Compilation
+### 3-Layer Retrieval
 
-Inspired by Karpathy's "LLM as knowledge compiler":
+```
+Query: "What's our BI tool?"
+  │
+  ├─ Layer 1: Knowledge Index  (< 5ms)  → "SAP Analytics Cloud"
+  ├─ Layer 2: Structured SQL   (< 20ms) → For aggregation queries
+  └─ Layer 3: Hybrid Search    (200ms+) → Dense + BM25 + RRF + Feedback Boost
+```
 
-- **Claim Extraction** — LLM reads chunks, extracts Subject→Predicate→Value triples with temporal validity (valid_from/valid_until)
-- **Knowledge Index** — materialized lookup from normalized claims, rebuilt after every ingestion
-- **LLM Curator** — periodically normalizes predicates, merges equivalents, flags inconsistencies
-- **Topic Synthesis** — LLM compiles claims per topic into coherent summaries
-- **Retrieval Feedback** — search result ratings improve future rankings
+Pre-filter by `source_type` or `doc_type` (GIN indexes reduce vector scans ~90%).
 
-The system gets smarter with every document ingested and every query answered.
+### Performance Optimizations
+
+| Feature | Impact |
+|---------|--------|
+| **Embedding Cache** | 30-50% fewer API calls (LRU, SHA-256 keyed) |
+| **GIN Pre-Filter Indexes** | ~90% fewer vector scans |
+| **Multi-Pass Claims** | +15-25% more claims extracted (`CLAIM_EXTRACTION_PASSES=2`) |
+| **Feedback Boost** | Search results improve from user ratings |
+| **Delta-Sync** | Notion connector only re-syncs changed pages |
+
+## Dashboard
+
+| Page | What It Shows |
+|------|---------------|
+| **Overview** | Document count, avg quality, open conflicts, pending reviews |
+| **Upload** | Drag & drop (PDF, DOCX, XLSX, PPTX, CSV, HTML, TXT) |
+| **Search** | Live search with routing info, confidence, source provenance |
+| **Sources** | Connect Notion (token + sync), SharePoint/Jira (webhook setup) |
+| **Documents** | Quality scores, conflict status, claims per document |
+| **Conflicts** | LLM Judge recommendations, auto-resolve button, threshold selector |
+| **Reviews** | Approve/reject with HTMX inline actions |
+| **Analytics** | Quality by source, contradiction hotspots, claim stability |
+| **Account** | API key management (create/revoke), quotas, usage metrics |
 
 ## API Reference
 
 ### Core
 
 ```bash
-# Ingest (tenant derived from API key)
 POST /v1/ingest                              # File upload
-POST /v1/webhooks/ingest                     # Webhook (SharePoint, Jira, etc.)
-
-# Retrieve (3-layer: index → structured → hybrid)
-POST /v1/retrieve                            # {"query": "...", "top_k": 5}
-# Optional: "source_type": "sharepoint", "doc_type": "pdf"
-POST /v1/retrieve/feedback                   # Rate results for learning
-
-# Documents
-GET  /v1/documents                           # Cursor-paginated list
-GET  /v1/documents/{id}                      # Detail with chunks
+POST /v1/webhooks/ingest                     # Webhook connector
+POST /v1/retrieve                            # 3-layer search
+POST /v1/retrieve/feedback                   # Rate results
+GET  /v1/documents                           # Cursor-paginated
+GET  /v1/documents/{id}                      # Detail + chunks
 DELETE /v1/documents/{id}                    # Soft delete
 ```
 
@@ -127,38 +144,45 @@ DELETE /v1/documents/{id}                    # Soft delete
 
 ```bash
 GET  /v1/documents/{id}/quality              # Quality report
-GET  /v1/quality/findings                    # All findings
 GET  /v1/conflicts                           # Detected contradictions
-POST /v1/conflicts/{id}/resolve              # keep_a / keep_b / keep_both
+POST /v1/conflicts/{id}/judge                # Ask LLM Judge
+POST /v1/conflicts/auto-resolve              # Auto-resolve all (threshold)
+POST /v1/conflicts/{id}/resolve              # Manual resolution
 GET  /v1/reviews                             # Review tasks
-POST /v1/reviews/{id}/approve                # Approve
-POST /v1/reviews/{id}/reject                 # Reject
+GET  /v1/claim-clusters                      # Multi-doc disagreements
 ```
 
 ### Knowledge Compilation
 
 ```bash
-GET  /v1/synthesis                           # List topic summaries
-GET  /v1/synthesis/{topic}                   # Get synthesis for topic
-POST /v1/synthesis/compile                   # Trigger LLM compilation
+POST /v1/synthesis/compile                   # LLM topic compilation
 POST /v1/synthesis/build-index               # Rebuild knowledge index
-POST /v1/synthesis/curate                    # Full LLM curation pipeline
+POST /v1/synthesis/curate                    # Full curation pipeline
+GET  /v1/synthesis/{topic}                   # Topic summary
 ```
 
-### Analytics
+### Analytics & Operations
 
 ```bash
-GET  /v1/analytics/quality-by-source         # Quality per data source
-GET  /v1/analytics/contradiction-hotspots    # Most unstable knowledge
-GET  /v1/analytics/claim-stability           # Claim churn rate
+GET  /v1/analytics/quality-by-source         # Quality per source
+GET  /v1/analytics/contradiction-hotspots    # Unstable knowledge
+GET  /v1/analytics/claim-stability           # Claim churn
+GET  /v1/analytics/audit                     # Audit log
+GET  /v1/analytics/usage                     # Usage metrics
+GET  /v1/source-tree                         # Hierarchical source view
+GET  /metrics                                # Prometheus metrics
 ```
 
-### ACL
+### Tenant & Keys (SaaS)
 
 ```bash
-POST /v1/acl                                 # Create ACL entry
-GET  /v1/acl/{document_id}                   # List ACL entries
-DELETE /v1/acl/{entry_id}                    # Delete ACL entry
+POST /v1/tenants                             # Signup (public)
+GET  /v1/tenants/me                          # Tenant info + quota
+POST /v1/tenants/me/export                   # GDPR data export
+DELETE /v1/tenants/me                        # GDPR right-to-erasure
+POST /v1/keys                                # Create API key
+GET  /v1/keys                                # List keys
+DELETE /v1/keys/{id}                         # Revoke key
 ```
 
 ## MCP Server (AI Agent Integration)
@@ -169,76 +193,64 @@ DELETE /v1/acl/{entry_id}                    # Delete ACL entry
     "raasoa": {
       "command": "uv",
       "args": ["run", "python", "-m", "raasoa.mcp"],
-      "cwd": "/path/to/raasoa"
+      "env": { "RAASOA_URL": "http://localhost:8000" }
     }
   }
 }
 ```
 
-**10 Tools:**
-`raasoa_search`, `raasoa_ingest`, `raasoa_list_documents`, `raasoa_get_document`, `raasoa_quality_report`, `raasoa_list_conflicts`, `raasoa_feedback`, `raasoa_get_synthesis`, `raasoa_compile`, `raasoa_curate`
+**11 Tools:** `raasoa_search`, `raasoa_ingest`, `raasoa_list_documents`, `raasoa_get_document`, `raasoa_quality_report`, `raasoa_list_conflicts`, `raasoa_auto_resolve`, `raasoa_feedback`, `raasoa_get_synthesis`, `raasoa_compile`, `raasoa_curate`
 
 ## Source Connectors
 
-Connect data sources directly from the dashboard — no code needed:
+| Source | Method | Auto-Sync |
+|--------|--------|-----------|
+| **Notion** | Native (Dashboard → token → sync) | Delta-sync, scheduled |
+| **SharePoint** | Native (MS Graph API) | On demand |
+| **Jira / Confluence** | Webhook | Push-based |
+| **Custom** | `POST /v1/webhooks/ingest` | Push-based |
 
-| Source | Method | Setup |
-|--------|--------|-------|
-| **Notion** | Native connector | Dashboard → Sources → Enter token → Sync |
-| **SharePoint** | Webhook (Power Automate) | Dashboard → Sources → Create → Setup guide |
-| **Jira** | Webhook (Automation Rule) | Dashboard → Sources → Create → Setup guide |
-| **Confluence** | Webhook (Space Automation) | Dashboard → Sources → Create → Setup guide |
-| **Custom** | Webhook (any HTTP) | `POST /v1/webhooks/ingest` |
-| **Batch** | CLI | `uv run python -m raasoa.worker ingest /path/` |
-
-```bash
-# Source management API
-POST /v1/sources                    # Create source with config
-GET  /v1/sources                    # List configured sources
-POST /v1/sources/{id}/sync          # Trigger sync (Notion: auto-pull)
-DELETE /v1/sources/{id}              # Remove source
-```
-
-Data contract validation on webhooks: minimum content length, required metadata fields, status filters, content blocklist.
+Rich metadata extraction (Notion): author, editor, status, tags, parent path, timestamps.
 
 ## Embedding Providers
 
-Switch with one environment variable — all local-first, cloud optional:
+| Provider | Latency | Config |
+|----------|---------|--------|
+| **Ollama** (default) | ~2s/batch | `EMBEDDING_PROVIDER=ollama` |
+| **OpenAI** | ~10ms/batch | `EMBEDDING_PROVIDER=openai` + API key |
+| **Azure OpenAI** | ~10ms/batch | `OPENAI_BASE_URL=https://xxx.openai.azure.com/` |
+| **Cohere** | ~15ms/batch | `EMBEDDING_PROVIDER=cohere` + API key |
+| **Custom** | varies | `OPENAI_BASE_URL=http://your-server/v1` |
 
-| Provider | Config | Use Case |
-|----------|--------|----------|
-| **Ollama** (default) | `EMBEDDING_PROVIDER=ollama` | Local, air-gapped, full control |
-| **OpenAI** | `EMBEDDING_PROVIDER=openai` | Cloud, high quality |
-| **Azure OpenAI** | `OPENAI_BASE_URL=https://xxx.openai.azure.com/` | Enterprise cloud |
-| **Cohere** | `EMBEDDING_PROVIDER=cohere` | Alternative cloud |
-| **Custom** | `OPENAI_BASE_URL=http://your-server/v1` | Any OpenAI-compatible endpoint |
+Embedding Cache wraps all providers — identical texts never embedded twice.
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTH_ENABLED` | `true` | API key authentication |
-| `API_KEYS` | — | `"key:tenant-uuid"` pairs |
-| `WEBHOOK_SECRET` | — | Shared secret for webhooks |
-| `DASHBOARD_PASSWORD` | — | Dashboard login password |
 | `EMBEDDING_PROVIDER` | `ollama` | `ollama` / `openai` / `cohere` |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Custom/Azure endpoint |
+| `AUTH_ENABLED` | `true` | API key authentication |
+| `SIGNUP_ENABLED` | `true` | Public tenant signup |
+| `LLM_JUDGE_ENABLED` | `true` | AI conflict resolution |
+| `LLM_JUDGE_AUTO_RESOLVE_THRESHOLD` | `0.85` | Auto-resolve confidence (0-1) |
+| `CLAIM_EXTRACTION_PASSES` | `1` | 2 = multi-pass (+15-25% claims) |
 | `QUALITY_GATE_ENABLED` | `true` | Quality scoring |
-| `CLAIM_EXTRACTION_ENABLED` | `true` | LLM claim extraction |
 | `CONFLICT_DETECTION_ENABLED` | `true` | Contradiction detection |
-| `RERANKER` | `passthrough` | `passthrough` / `ollama` |
-| `MAX_FILE_SIZE_MB` | `100` | Upload size limit |
+| `DASHBOARD_PASSWORD` | — | Dashboard login password |
 
 Full list in `.env.example`.
 
 ## Architecture
 
-- **Single database**: PostgreSQL + pgvector + tsvector. No Redis, no Elasticsearch.
-- **Local-first**: Default runs entirely on your machine (Ollama + PostgreSQL).
-- **Model agnostic**: Swap providers with one env variable.
-- **Tenant isolation**: Every query scoped to the authenticated tenant.
-- **Content-hash dedup**: Re-ingesting unchanged documents is a no-op.
-- **Auto-curation**: Knowledge index rebuilds after every ingestion. LLM curator normalizes predicates on demand.
+- **Single database**: PostgreSQL + pgvector + tsvector + pg_trgm. No Redis.
+- **Local-first**: Default runs entirely local (Ollama + PostgreSQL). Cloud optional.
+- **Embedding Cache**: LRU cache saves 30-50% of API costs.
+- **GIN indexes**: Pre-filter before vector scan reduces work ~90%.
+- **Tenant isolation**: Every query scoped to authenticated tenant.
+- **Audit logging**: Every mutation logged (who, what, when, from where).
+- **Job queue**: PostgreSQL-based (no Celery/Redis needed).
+- **Prometheus metrics**: 12 operational metrics at `/metrics`.
+- **SaaS-ready**: Tenant signup, API key self-service, usage metering, quotas.
 
 ## Development
 
@@ -247,8 +259,8 @@ uv sync --extra dev --extra parsing
 docker compose up -d postgres
 uv run alembic upgrade head
 uv run uvicorn raasoa.main:app --reload --port 8000
-uv run pytest -v              # 145+ tests
-uv run ruff check src/          # 0 errors
+uv run pytest -v              # 167 tests
+uv run ruff check src/        # 0 errors
 uv run mypy src/raasoa --ignore-missing-imports  # 0 errors
 ```
 
