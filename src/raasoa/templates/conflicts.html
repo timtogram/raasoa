@@ -1,8 +1,28 @@
 {% extends "base.html" %}
 {% block title %}Conflicts - RAASOA{% endblock %}
 {% block content %}
-<h1 class="text-2xl font-bold text-gray-900 mb-2">Conflicts & Contradictions</h1>
-<p class="text-sm text-gray-500 mb-6">Only showing conflicts with &ge;50% confidence. Lower-confidence matches are filtered out.</p>
+<div class="flex items-center justify-between mb-2">
+    <h1 class="text-2xl font-bold text-gray-900">Conflicts & Contradictions</h1>
+    <div class="flex items-center gap-3">
+        <label class="text-sm text-gray-500">
+            Auto-resolve threshold:
+            <select id="threshold-select" class="ml-1 border border-gray-300 rounded px-2 py-1 text-sm">
+                <option value="0.95">95% (very conservative)</option>
+                <option value="0.85" selected>85% (balanced)</option>
+                <option value="0.75">75% (moderate)</option>
+                <option value="0.60">60% (aggressive)</option>
+            </select>
+        </label>
+        <button onclick="autoResolveAll()" id="auto-resolve-btn"
+                class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 font-medium">
+            Auto-Resolve All
+        </button>
+    </div>
+</div>
+<p class="text-sm text-gray-500 mb-6">LLM Judge evaluates conflicts and auto-resolves high-confidence ones. Lower-confidence conflicts need human review.</p>
+
+<!-- Auto-resolve status -->
+<div id="auto-resolve-status" class="hidden mb-6"></div>
 
 {% set real_conflicts = [] %}
 {% for c in conflicts %}
@@ -14,7 +34,7 @@
 {% if not real_conflicts %}
 <div class="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
     <div class="text-green-800 font-semibold">No significant conflicts</div>
-    <div class="text-green-600 text-sm mt-1">No contradictions above 50% confidence detected.</div>
+    <div class="text-green-600 text-sm mt-1">All contradictions resolved or below 50% confidence.</div>
 </div>
 {% endif %}
 
@@ -26,12 +46,9 @@
             <span class="px-2 py-0.5 rounded text-xs font-medium
                 {% if c.conflict_type == 'claim_contradiction' %}bg-red-100 text-red-800
                 {% elif c.conflict_type == 'potential_contradiction' %}bg-orange-100 text-orange-800
-                {% elif c.conflict_type == 'exact_duplicate' %}bg-purple-100 text-purple-800
                 {% else %}bg-gray-100 text-gray-800{% endif %}">
                 {% if c.conflict_type == 'claim_contradiction' %}Claim Contradiction
                 {% elif c.conflict_type == 'potential_contradiction' %}Similar Content
-                {% elif c.conflict_type == 'exact_duplicate' %}Duplicate
-                {% elif c.conflict_type == 'chunk_overlap' %}Content Overlap
                 {% else %}{{ c.conflict_type }}{% endif %}
             </span>
             <span class="text-sm text-gray-500">Confidence: {{ "%.0f"|format((c.confidence or 0) * 100) }}%</span>
@@ -40,54 +57,79 @@
     </div>
 
     {% if c.details and c.details.get('new_claim') %}
-    {# Claim-based contradiction — show side by side #}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         <div class="bg-blue-50 rounded-lg p-4">
             <div class="text-xs text-blue-600 font-medium mb-1">Document A (newer)</div>
             <div class="text-sm font-semibold text-gray-900 mb-1">{{ c.details.new_claim.predicate }}</div>
             <div class="text-lg font-bold text-blue-700">= {{ c.details.new_claim.value }}</div>
-            {% if c.details.new_claim.get('valid_from') %}
-            <div class="text-xs text-blue-500 mt-1">Valid from: {{ c.details.new_claim.valid_from }}</div>
-            {% endif %}
             <div class="text-xs text-gray-500 mt-2 line-clamp-2">{{ c.details.new_claim.evidence[:150] }}...</div>
         </div>
         <div class="bg-orange-50 rounded-lg p-4">
             <div class="text-xs text-orange-600 font-medium mb-1">Document B{% if c.details.get('existing_doc_title') %} ({{ c.details.existing_doc_title }}){% endif %}</div>
             <div class="text-sm font-semibold text-gray-900 mb-1">{{ c.details.existing_claim.predicate }}</div>
             <div class="text-lg font-bold text-orange-700">= {{ c.details.existing_claim.value }}</div>
-            {% if c.details.existing_claim.get('valid_from') %}
-            <div class="text-xs text-orange-500 mt-1">Valid from: {{ c.details.existing_claim.valid_from }}</div>
-            {% endif %}
             <div class="text-xs text-gray-500 mt-2 line-clamp-2">{{ c.details.existing_claim.evidence[:150] }}...</div>
         </div>
     </div>
-
     {% elif c.details and c.details.get('other_doc_title') %}
-    {# Embedding-based potential contradiction — show doc titles + preview #}
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        <div class="bg-blue-50 rounded-lg p-4">
-            <div class="text-xs text-blue-600 font-medium mb-1">Document A</div>
-            <div class="text-sm text-gray-700 line-clamp-3">{{ c.details.get('other_chunk_preview', '')[:200] }}...</div>
-        </div>
-        <div class="bg-orange-50 rounded-lg p-4">
-            <div class="text-xs text-orange-600 font-medium mb-1">Document B ({{ c.details.other_doc_title }})</div>
-            <div class="text-sm text-gray-500">Semantic distance: {{ "%.3f"|format(c.details.get('semantic_distance', 0)) }}</div>
-        </div>
-    </div>
+    <p class="text-sm text-gray-700 mb-3">
+        Semantically similar to <strong>{{ c.details.other_doc_title }}</strong>
+        (distance: {{ "%.3f"|format(c.details.get('semantic_distance', 0)) }})
+    </p>
+    {% endif %}
 
-    {% elif c.details and c.details.get('message') %}
-    <p class="text-sm text-gray-700 mb-3">{{ c.details.message }}</p>
+    {# LLM Judge Recommendation #}
+    {% if c.details and c.details.get('llm_judge') %}
+    {% set judge = c.details.llm_judge %}
+    <div class="bg-purple-50 border border-purple-200 rounded-lg p-3 mb-3">
+        <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs font-semibold text-purple-700">LLM Judge Recommendation</span>
+            <span class="px-2 py-0.5 rounded text-xs font-medium
+                {% if judge.confidence >= 0.85 %}bg-green-100 text-green-700
+                {% elif judge.confidence >= 0.7 %}bg-yellow-100 text-yellow-700
+                {% else %}bg-gray-100 text-gray-600{% endif %}">
+                {{ "%.0f"|format(judge.confidence * 100) }}% confident
+            </span>
+        </div>
+        <div class="text-sm text-purple-900 font-medium">
+            {% if judge.recommendation == 'keep_a' %}→ Keep Document A
+            {% elif judge.recommendation == 'keep_b' %}→ Keep Document B
+            {% else %}→ Both Valid{% endif %}
+        </div>
+        <p class="text-xs text-purple-700 mt-1">{{ judge.reasoning }}</p>
+    </div>
     {% endif %}
 
     {% if c.status == 'new' %}
-    <div class="flex gap-2 mt-3">
+    <div class="flex items-center gap-2 mt-3 flex-wrap">
+        {# Ask Judge button (if no verdict yet) #}
+        {% if not (c.details and c.details.get('llm_judge')) %}
+        <button onclick="askJudge('{{ c.id }}')" id="judge-btn-{{ c.id }}"
+                class="px-3 py-1.5 bg-purple-600 text-white text-sm rounded hover:bg-purple-700">
+            Ask LLM Judge
+        </button>
+        {% endif %}
+
+        {# Accept Judge recommendation (if verdict exists) #}
+        {% if c.details and c.details.get('llm_judge') %}
+        {% set rec = c.details.llm_judge.recommendation %}
+        <button
+            hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
+            hx-vals='{"resolution": "{{ rec }}", "comment": "Accepted LLM Judge recommendation"}'
+            hx-target="#conflict-{{ c.id }}"
+            hx-swap="outerHTML"
+            class="px-3 py-1.5 bg-purple-600 text-white text-sm rounded hover:bg-purple-700">
+            Accept: {{ rec }}
+        </button>
+        {% endif %}
+
         <button
             hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
             hx-vals='{"resolution": "keep_a", "comment": ""}'
             hx-target="#conflict-{{ c.id }}"
             hx-swap="outerHTML"
             class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
-            Keep Doc A
+            Keep A
         </button>
         <button
             hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
@@ -95,7 +137,7 @@
             hx-target="#conflict-{{ c.id }}"
             hx-swap="outerHTML"
             class="px-3 py-1.5 bg-orange-600 text-white text-sm rounded hover:bg-orange-700">
-            Keep Doc B
+            Keep B
         </button>
         <button
             hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
@@ -107,12 +149,17 @@
         </button>
         <button
             hx-post="/dashboard/api/conflicts/{{ c.id }}/resolve"
-            hx-vals='{"resolution": "dismiss", "comment": "Not a real conflict"}'
+            hx-vals='{"resolution": "dismiss", "comment": ""}'
             hx-target="#conflict-{{ c.id }}"
             hx-swap="outerHTML"
             class="px-3 py-1.5 bg-gray-100 text-gray-500 text-xs rounded hover:bg-gray-200">
             Dismiss
         </button>
+    </div>
+    {% elif c.details and c.details.get('resolved_by') == 'llm_judge' %}
+    <div class="text-sm text-purple-600 font-medium mt-2">
+        Auto-resolved by LLM Judge: {{ c.details.get('resolution', '') }}
+        ({{ "%.0f"|format((c.details.get('confidence', 0)) * 100) }}%)
     </div>
     {% else %}
     <div class="text-sm text-green-600 font-medium mt-2">
@@ -122,4 +169,75 @@
 </div>
 {% endfor %}
 </div>
+
+<script>
+async function askJudge(conflictId) {
+    var btn = document.getElementById('judge-btn-' + conflictId);
+    if (btn) btn.innerHTML = '<span class="animate-pulse">Asking LLM Judge...</span>';
+
+    try {
+        var resp = await fetch('/dashboard/api/conflicts/' + conflictId + '/judge', {
+            method: 'POST'
+        });
+        var data = await resp.json();
+
+        if (resp.ok && data.recommendation) {
+            // Reload the page to show the verdict
+            window.location.reload();
+        } else {
+            if (btn) btn.innerHTML = 'Judge unavailable';
+        }
+    } catch (err) {
+        if (btn) btn.innerHTML = 'Error: ' + err.message;
+    }
+}
+
+async function autoResolveAll() {
+    var btn = document.getElementById('auto-resolve-btn');
+    var statusDiv = document.getElementById('auto-resolve-status');
+    var threshold = document.getElementById('threshold-select').value;
+
+    btn.innerHTML = '<span class="animate-pulse">Judging conflicts...</span>';
+    btn.disabled = true;
+    statusDiv.classList.remove('hidden');
+    statusDiv.innerHTML = '<div class="bg-indigo-50 border border-indigo-200 rounded-lg p-4 text-sm text-indigo-700 animate-pulse">LLM Judge is evaluating all open conflicts...</div>';
+
+    try {
+        var resp = await fetch('/dashboard/api/conflicts/auto-resolve?threshold=' + threshold, {
+            method: 'POST'
+        });
+        var data = await resp.json();
+
+        var autoCount = data.auto_resolved || 0;
+        var humanCount = data.kept_for_human || 0;
+        var judgedCount = data.judged || 0;
+
+        var color = autoCount > 0 ? 'green' : 'gray';
+        var verdictHtml = '';
+        if (data.verdicts) {
+            for (var v of data.verdicts) {
+                var badge = v.auto_resolved
+                    ? '<span class="px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-xs">AUTO</span>'
+                    : '<span class="px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded text-xs">HUMAN</span>';
+                verdictHtml += '<div class="mt-1">' + badge + ' ' + v.recommendation +
+                    ' (' + Math.round(v.confidence * 100) + '%) — ' + v.reasoning + '</div>';
+            }
+        }
+
+        statusDiv.innerHTML = '<div class="bg-' + color + '-50 border border-' + color + '-200 rounded-lg p-4">' +
+            '<div class="font-semibold text-' + color + '-800 mb-2">' +
+            'Judged: ' + judgedCount + ' | Auto-resolved: ' + autoCount + ' | Needs human: ' + humanCount +
+            '</div>' + verdictHtml + '</div>';
+
+        if (autoCount > 0) {
+            setTimeout(function() { window.location.reload(); }, 2000);
+        }
+    } catch (err) {
+        statusDiv.innerHTML = '<div class="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">Error: ' + err.message + '</div>';
+    }
+
+    btn.innerHTML = 'Auto-Resolve All';
+    btn.disabled = false;
+}
+</script>
 {% endblock %}

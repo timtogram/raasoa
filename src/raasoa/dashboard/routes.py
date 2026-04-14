@@ -843,6 +843,54 @@ async def dashboard_search_proxy(
 # ── HTMX Mutations ─────────────────────────────────────
 
 
+@router.post("/api/conflicts/{conflict_id}/judge")
+async def judge_conflict_proxy(
+    request: Request,
+    conflict_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Ask LLM Judge to evaluate a single conflict."""
+    if _check_auth(request):
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    import uuid as _u
+
+    from raasoa.quality.judge import judge_conflict
+
+    tid = _u.UUID(DEFAULT_TENANT)
+    verdict = await judge_conflict(session, conflict_id, tid)
+    if not verdict:
+        return JSONResponse(status_code=400, content={"detail": "Cannot judge"})
+
+    return JSONResponse(content={
+        "recommendation": verdict.recommendation,
+        "confidence": verdict.confidence,
+        "reasoning": verdict.reasoning,
+    })
+
+
+@router.post("/api/conflicts/auto-resolve")
+async def auto_resolve_proxy(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Auto-resolve all open conflicts via LLM Judge."""
+    if _check_auth(request):
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    import uuid as _u
+
+    from raasoa.quality.judge import auto_resolve_conflicts
+
+    # Get threshold from query param
+    threshold_str = request.query_params.get("threshold")
+    threshold = float(threshold_str) if threshold_str else None
+
+    tid = _u.UUID(DEFAULT_TENANT)
+    stats = await auto_resolve_conflicts(session, tid, threshold)
+    return JSONResponse(content=stats)
+
+
 @router.post("/api/conflicts/{conflict_id}/resolve", response_class=HTMLResponse)
 async def resolve_conflict_htmx(
     request: Request,
