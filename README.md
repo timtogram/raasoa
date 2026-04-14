@@ -173,18 +173,6 @@ GET  /v1/source-tree                         # Hierarchical source view
 GET  /metrics                                # Prometheus metrics
 ```
 
-### Tenant & Keys (SaaS)
-
-```bash
-POST /v1/tenants                             # Signup (public)
-GET  /v1/tenants/me                          # Tenant info + quota
-POST /v1/tenants/me/export                   # GDPR data export
-DELETE /v1/tenants/me                        # GDPR right-to-erasure
-POST /v1/keys                                # Create API key
-GET  /v1/keys                                # List keys
-DELETE /v1/keys/{id}                         # Revoke key
-```
-
 ## MCP Server (AI Agent Integration)
 
 ```json
@@ -230,7 +218,6 @@ Embedding Cache wraps all providers — identical texts never embedded twice.
 |----------|---------|-------------|
 | `EMBEDDING_PROVIDER` | `ollama` | `ollama` / `openai` / `cohere` |
 | `AUTH_ENABLED` | `true` | API key authentication |
-| `SIGNUP_ENABLED` | `true` | Public tenant signup |
 | `LLM_JUDGE_ENABLED` | `true` | AI conflict resolution |
 | `LLM_JUDGE_AUTO_RESOLVE_THRESHOLD` | `0.85` | Auto-resolve confidence (0-1) |
 | `CLAIM_EXTRACTION_PASSES` | `1` | 2 = multi-pass (+15-25% claims) |
@@ -250,7 +237,6 @@ Full list in `.env.example`.
 - **Audit logging**: Every mutation logged (who, what, when, from where).
 - **Job queue**: PostgreSQL-based (no Celery/Redis needed).
 - **Prometheus metrics**: 12 operational metrics at `/metrics`.
-- **SaaS-ready**: Tenant signup, API key self-service, usage metering, quotas.
 
 ## Development
 

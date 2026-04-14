@@ -100,4 +100,4 @@ src/raasoa/
 5. **Auto-curation** — Knowledge index rebuilds after every ingestion.
 6. **Local-first** — Ollama default, cloud optional. One ENV to switch.
 7. **API/MCP-first** — dashboard is governance UI, not end-user product.
-8. **SaaS-ready** — multi-tenant, metered, quota-enforced.
+8. **Multi-tenant** — tenant-isolated from the start.

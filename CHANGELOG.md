@@ -15,13 +15,11 @@
 - **Multi-Pass Claim Extraction**: Optional second pass finds +15-25% more claims (`CLAIM_EXTRACTION_PASSES=2`)
 - **Feedback Boost**: Retrieval feedback now actually applied to RRF scores (was stored but unused)
 
-### SaaS Foundations
-- **Tenant Signup**: `POST /v1/tenants` — public signup with free tier, returns API key
+### Multi-Tenant Operations
 - **API Key Self-Service**: Create/list/revoke keys from dashboard or API
 - **Usage Metering**: Track documents, queries, embedding calls, LLM calls per tenant
-- **Quota Enforcement**: 429 when document/query/source limits exceeded
-- **Plan Tiers**: free / starter / pro / enterprise with configurable limits
-- **GDPR**: Data export (`POST /v1/tenants/me/export`) and right-to-erasure (`DELETE /v1/tenants/me`)
+- **Quota Enforcement**: Configurable limits per tenant, 429 when exceeded
+- **GDPR Compliance**: Data export and right-to-erasure endpoints
 - **Account Dashboard**: Quotas with progress bars, usage table, key management UI
 
 ### Source Connectors
