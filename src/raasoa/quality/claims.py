@@ -57,15 +57,44 @@ Text:
 
 JSON array:"""
 
+REFINE_PROMPT = """/no_think
+You already extracted these claims from a text passage:
+{existing_claims}
+
+Now re-read the SAME text and find claims you MISSED in the first pass.
+Focus on: numbers, dates, deadlines, costs, responsibilities, tools,
+policies, thresholds, and implicit facts.
+
+Do NOT repeat claims you already found. Only return NEW claims.
+Return a JSON array (empty if nothing new).
+
+Text:
+---
+{text}
+---
+
+JSON array of NEW claims only:"""
+
 
 async def extract_claims_from_text(
     text: str,
     base_url: str = settings.ollama_base_url,
     model: str = settings.ollama_chat_model,
     meter_tenant_id: str | None = None,
+    existing_claims: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Call Ollama to extract claims from a text passage."""
-    prompt = CLAIM_EXTRACTION_PROMPT.format(text=text[:4000])
+    """Call Ollama to extract claims from a text passage.
+
+    If existing_claims is provided, runs a refinement pass that
+    looks for claims missed in the first extraction.
+    """
+    if existing_claims:
+        claims_str = json.dumps(existing_claims[:20], ensure_ascii=False)
+        prompt = REFINE_PROMPT.format(
+            existing_claims=claims_str, text=text[:4000],
+        )
+    else:
+        prompt = CLAIM_EXTRACTION_PROMPT.format(text=text[:4000])
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -187,17 +216,30 @@ async def extract_and_store_claims(
         eligible = eligible[:50]
 
     semaphore = asyncio.Semaphore(max_concurrent)
+    num_passes = settings.claim_extraction_passes
 
     async def _extract_one(
         chunk_id: uuid.UUID, chunk_text: str,
     ) -> list[dict[str, Any]]:
         async with semaphore:
+            # Pass 1: initial extraction
             raw = await extract_claims_from_text(
                 chunk_text, meter_tenant_id=str(tenant_id),
             )
+            all_raw = list(raw)
+
+            # Pass 2+: refinement — find what was missed
+            if num_passes >= 2 and raw:
+                refine = await extract_claims_from_text(
+                    chunk_text,
+                    meter_tenant_id=str(tenant_id),
+                    existing_claims=raw,
+                )
+                all_raw.extend(refine)
+
             return [
                 {**rc, "chunk_id": chunk_id, "evidence": chunk_text[:500]}
-                for rc in raw
+                for rc in all_raw
             ]
 
     tasks = [_extract_one(cid, text) for cid, text in eligible]

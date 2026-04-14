@@ -2,7 +2,7 @@
 
 import pytest
 
-from raasoa.providers.factory import get_embedding_provider
+from raasoa.providers.factory import _create_raw_provider, get_embedding_provider
 
 
 def test_factory_returns_ollama_by_default() -> None:
@@ -14,27 +14,30 @@ def test_factory_returns_ollama_by_default() -> None:
 def test_factory_rejects_unknown_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unknown providers produce clear error messages."""
     from raasoa import config
+
     monkeypatch.setattr(config.settings, "embedding_provider", "magic-cloud-ai")
     with pytest.raises(ValueError, match="Unknown embedding provider"):
-        get_embedding_provider()
+        _create_raw_provider()
 
 
 def test_factory_openai_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAI provider requires API key to be set."""
     from raasoa import config
+
     monkeypatch.setattr(config.settings, "embedding_provider", "openai")
     monkeypatch.setattr(config.settings, "openai_api_key", "")
     with pytest.raises(ValueError, match="OPENAI_API_KEY not set"):
-        get_embedding_provider()
+        _create_raw_provider()
 
 
 def test_factory_cohere_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cohere provider requires API key to be set."""
     from raasoa import config
+
     monkeypatch.setattr(config.settings, "embedding_provider", "cohere")
     monkeypatch.setattr(config.settings, "cohere_api_key", "")
     with pytest.raises(ValueError, match="COHERE_API_KEY not set"):
-        get_embedding_provider()
+        _create_raw_provider()
 
 
 def test_openai_provider_detects_azure() -> None:
@@ -77,3 +80,11 @@ def test_openai_provider_custom_endpoint() -> None:
     )
     assert provider.model_id == "openai/my-local-model"
     assert provider.dimensions == 768
+
+
+def test_embedding_cache_wraps_provider() -> None:
+    """get_embedding_provider returns a cache, not a raw provider."""
+    from raasoa.providers.cache import EmbeddingCache
+
+    provider = get_embedding_provider()
+    assert isinstance(provider, EmbeddingCache)

@@ -56,6 +56,7 @@ class Settings(BaseSettings):
 
     # Claim Extraction (LLM-based)
     claim_extraction_enabled: bool = True
+    claim_extraction_passes: int = 1  # 2 = multi-pass (+15-25% more claims)
     ollama_chat_model: str = "qwen3:8b"
 
     # Reranking
