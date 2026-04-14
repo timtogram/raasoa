@@ -150,6 +150,27 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "raasoa_auto_resolve",
+            "description": (
+                "Ask the LLM judge to evaluate and auto-resolve conflicts. "
+                "Conflicts above the confidence threshold are resolved automatically. "
+                "Lower-confidence conflicts are kept for human review. "
+                "Call this after ingesting documents that created conflicts."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "threshold": {
+                        "type": "number",
+                        "description": (
+                            "Confidence threshold for auto-resolve (0.0-1.0). "
+                            "Default: 0.85. Higher = more conservative."
+                        ),
+                    },
+                },
+            },
+        },
+        {
             "name": "raasoa_list_conflicts",
             "description": (
                 "List detected conflicts between documents. "
@@ -436,6 +457,32 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             else:
                 lines.append("\nNo quality findings — document is clean.")
 
+            return [{"type": "text", "text": "\n".join(lines)}]
+
+        elif name == "raasoa_auto_resolve":
+            resolve_params: dict[str, Any] = {}
+            if "threshold" in arguments:
+                resolve_params["threshold"] = arguments["threshold"]
+            resp = await client.post(
+                f"{BASE_URL}/v1/conflicts/auto-resolve",
+                params=resolve_params,
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            lines = [
+                f"LLM Judge Results:\n"
+                f"Open conflicts: {data.get('total_open', 0)}\n"
+                f"Judged: {data.get('judged', 0)}\n"
+                f"Auto-resolved: {data.get('auto_resolved', 0)}\n"
+                f"Kept for human: {data.get('kept_for_human', 0)}\n"
+            ]
+            for v in data.get("verdicts", [])[:5]:
+                status = "AUTO-RESOLVED" if v.get("auto_resolved") else "needs human"
+                lines.append(
+                    f"\n[{status}] {v['recommendation']} "
+                    f"({v['confidence']:.0%}): {v['reasoning']}"
+                )
             return [{"type": "text", "text": "\n".join(lines)}]
 
         elif name == "raasoa_list_conflicts":

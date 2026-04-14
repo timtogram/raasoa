@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     claim_extraction_passes: int = 1  # 2 = multi-pass (+15-25% more claims)
     ollama_chat_model: str = "qwen3:8b"
 
+    # LLM Judge for Conflict Resolution
+    llm_judge_enabled: bool = True
+    llm_judge_auto_resolve_threshold: float = 0.85  # Auto-resolve above this
+
     # Reranking
     reranker: str = "passthrough"  # passthrough | ollama | cohere
 

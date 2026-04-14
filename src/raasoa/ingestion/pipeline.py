@@ -259,4 +259,23 @@ async def ingest_file(
         except Exception:
             pass  # Queue is best-effort
 
+    # 14. LLM Judge: auto-resolve high-confidence conflicts
+    if (
+        settings.llm_judge_enabled
+        and settings.conflict_detection_enabled
+        and doc.conflict_status == "conflicts_detected"
+    ):
+        try:
+            from raasoa.quality.judge import auto_resolve_conflicts
+
+            judge_stats = await auto_resolve_conflicts(session, tenant_id)
+            if judge_stats.get("auto_resolved", 0) > 0:
+                import logging
+                logging.getLogger(__name__).info(
+                    "LLM Judge auto-resolved %d conflicts for doc %s",
+                    judge_stats["auto_resolved"], doc.id,
+                )
+        except Exception:
+            pass  # Judge is best-effort
+
     return doc, final_assessment

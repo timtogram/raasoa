@@ -162,6 +162,57 @@ async def list_conflicts(
     ]
 
 
+@router.post("/conflicts/{conflict_id}/judge")
+async def judge_conflict_endpoint(
+    request: Request,
+    conflict_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Ask the LLM judge to evaluate a conflict.
+
+    Returns a recommendation (keep_a/keep_b/keep_both) with
+    confidence and reasoning. Does NOT auto-resolve — use
+    /conflicts/auto-resolve for that.
+    """
+    tenant_id = await resolve_tenant_async(request)
+
+    from raasoa.quality.judge import judge_conflict
+
+    verdict = await judge_conflict(session, conflict_id, tenant_id)
+    if not verdict:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot judge this conflict (no claim data).",
+        )
+
+    return {
+        "conflict_id": str(verdict.conflict_id),
+        "recommendation": verdict.recommendation,
+        "confidence": verdict.confidence,
+        "reasoning": verdict.reasoning,
+        "auto_resolved": verdict.auto_resolved,
+    }
+
+
+@router.post("/conflicts/auto-resolve")
+async def auto_resolve_endpoint(
+    request: Request,
+    threshold: float | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Auto-resolve all conflicts where the LLM judge is confident.
+
+    By default uses LLM_JUDGE_AUTO_RESOLVE_THRESHOLD (0.85).
+    Only auto-resolves keep_a/keep_b — never auto-resolves keep_both.
+    """
+    tenant_id = await resolve_tenant_async(request)
+
+    from raasoa.quality.judge import auto_resolve_conflicts
+
+    stats = await auto_resolve_conflicts(session, tenant_id, threshold)
+    return stats
+
+
 @router.post("/conflicts/{conflict_id}/resolve")
 async def resolve_conflict(
     request: Request,
