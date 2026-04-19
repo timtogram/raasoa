@@ -77,6 +77,10 @@ async def webhook_ingest(
         tenant_id = await resolve_tenant_async(request)
 
     # Ensure source exists
+    # Ensure tenant exists (auto-create for webhook flows)
+    from raasoa.api.ingestion import _ensure_default_tenant_and_source
+    await _ensure_default_tenant_and_source(session, tenant_id)
+
     result = await session.execute(
         text(
             "SELECT id FROM sources "

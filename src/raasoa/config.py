@@ -61,7 +61,8 @@ class Settings(BaseSettings):
 
     # LLM Judge for Conflict Resolution
     llm_judge_enabled: bool = True
-    llm_judge_auto_resolve_threshold: float = 0.85  # Auto-resolve above this
+    llm_judge_auto_resolve_threshold: float = 0.85
+    llm_judge_model: str = ""  # Empty = use ollama_chat_model
 
     # Reranking
     reranker: str = "passthrough"  # passthrough | ollama | cohere

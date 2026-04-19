@@ -34,32 +34,15 @@ from raasoa.config import settings
 
 logger = logging.getLogger(__name__)
 
-JUDGE_PROMPT = """/no_think
-You are a knowledge governance judge. Two documents contain conflicting claims about the same topic.
+JUDGE_PROMPT = """Two documents disagree about: {predicate}
 
-Your job: decide which claim is more likely CORRECT and CURRENT.
-
-Consider:
-1. RECENCY: Is one document newer? Newer policies supersede older ones.
-2. AUTHORITY: Official policies > meeting notes > informal docs.
-3. SPECIFICITY: "Budget is 420,000 EUR" > "Budget is around 400k".
-4. CONSISTENCY: Does one claim fit better with other known facts?
-
-Conflict:
-- Topic: {predicate}
-- Claim A: "{value_a}" (from: {title_a}, source: {source_a})
-  Evidence: {evidence_a}
-- Claim B: "{value_b}" (from: {title_b}, source: {source_b})
-  Evidence: {evidence_b}
-
+Doc A "{title_a}" says: {value_a}
+Doc B "{title_b}" says: {value_b}
 {extra_context}
+Which is correct? Newer documents and official decisions take priority.
 
-Respond with ONLY this JSON (no other text):
-{{
-  "recommendation": "keep_a" or "keep_b" or "keep_both",
-  "confidence": 0.0 to 1.0,
-  "reasoning": "Brief explanation why"
-}}"""
+Reply ONLY with JSON:
+{{"recommendation":"keep_a","confidence":0.9,"reasoning":"why"}}"""
 
 
 @dataclass
@@ -94,14 +77,18 @@ async def judge_conflict(
     if not conflict:
         return None
 
-    details = conflict.details or {}
+    raw_details = conflict.details
+    details = json.loads(raw_details) if isinstance(raw_details, str) else raw_details or {}
 
     # Extract claim info
     new_claim = details.get("new_claim", {})
     existing_claim = details.get("existing_claim", {})
 
     if not new_claim or not existing_claim:
-        # Non-claim conflict (embedding-based) — less data to judge
+        logger.debug(
+            "Cannot judge conflict %s: no claim data (keys: %s)",
+            conflict_id, list(details.keys()),
+        )
         return None
 
     # Fetch document metadata for context
@@ -142,24 +129,23 @@ async def judge_conflict(
         predicate=new_claim.get("predicate", "unknown"),
         value_a=new_claim.get("value", "?"),
         title_a=doc_a.get("title", "Document A"),
-        source_a=doc_a.get("source_name", "unknown"),
-        evidence_a=(new_claim.get("evidence", "")[:300]),
         value_b=existing_claim.get("value", "?"),
         title_b=doc_b.get("title", details.get("existing_doc_title", "Document B")),
-        source_b=doc_b.get("source_name", "unknown"),
-        evidence_b=(existing_claim.get("evidence", "")[:300]),
         extra_context=extra,
     )
 
+    # Use dedicated judge model if configured, else fall back to chat model
+    judge_model = settings.llm_judge_model or settings.ollama_chat_model
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(
                 f"{settings.ollama_base_url.rstrip('/')}/api/generate",
                 json={
-                    "model": settings.ollama_chat_model,
+                    "model": judge_model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 256},
+                    "options": {"temperature": 0.1, "num_predict": 1024},
                 },
             )
             resp.raise_for_status()
@@ -168,14 +154,34 @@ async def judge_conflict(
             # Strip thinking tags
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
-            # Parse JSON
+            # Strip markdown code blocks
+            if "```json" in raw:
+                raw = raw.split("```json")[1].split("```")[0]
+            elif "```" in raw:
+                raw = raw.split("```")[1].split("```")[0]
+
+            # Parse JSON (handle truncation)
             start = raw.find("{")
-            end = raw.rfind("}") + 1
-            if start == -1 or end <= start:
-                logger.warning("Judge returned non-JSON: %s", raw[:100])
+            if start == -1:
+                logger.warning("Judge returned no JSON: %s", raw[:100])
                 return None
 
-            verdict_data = json.loads(raw[start:end])
+            json_str = raw[start:]
+            end = json_str.rfind("}")
+            if end > 0:
+                json_str = json_str[: end + 1]
+            else:
+                # Truncated — try to close it
+                # Find last complete key:value and close
+                last_quote = json_str.rfind('"')
+                if last_quote > 0:
+                    json_str = json_str[: last_quote + 1] + "}"
+
+            try:
+                verdict_data = json.loads(json_str)
+            except json.JSONDecodeError:
+                logger.warning("Judge JSON parse failed: %s", json_str[:200])
+                return None
 
             recommendation = verdict_data.get("recommendation", "keep_both")
             if recommendation not in ("keep_a", "keep_b", "keep_both"):

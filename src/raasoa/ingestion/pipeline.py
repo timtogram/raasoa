@@ -257,7 +257,7 @@ async def ingest_file(
             await enqueue(session, tenant_id, "curate", priority=-1)
             await session.commit()
         except Exception:
-            pass  # Queue is best-effort
+            await session.rollback()  # Clean up failed transaction
 
     # 14. LLM Judge: auto-resolve high-confidence conflicts
     if (
