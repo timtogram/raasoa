@@ -18,6 +18,10 @@ class RetrieveRequest(BaseModel):
         default=None,
         description="Pre-filter by document type (e.g. 'pdf', 'policy').",
     )
+    metadata_filter: dict[str, str] | None = Field(
+        default=None,
+        description="Filter by frontmatter metadata. E.g. {'ampel': 'grün', 'executor': 'claude'}",
+    )
 
 
 class ChunkHit(BaseModel):
@@ -62,6 +66,14 @@ class FeedbackRequest(BaseModel):
     rating: float = Field(
         ..., ge=-1.0, le=1.0,
         description="Rating: -1.0 (unhelpful) to 1.0 (very helpful)",
+    )
+    outcome: str | None = Field(
+        default=None,
+        description="Outcome of using this result: success/failure/partial",
+    )
+    outcome_context: str | None = Field(
+        default=None,
+        description="What happened when the agent used this result",
     )
 
 

@@ -47,6 +47,7 @@ async def hybrid_search(
     principal_id: str | None = None,
     source_type: str | None = None,
     doc_type: str | None = None,
+    metadata_filter: dict[str, str] | None = None,
 ) -> list[SearchResult]:
     """Hybrid search with optional source/type pre-filtering.
 
@@ -83,6 +84,16 @@ async def hybrid_search(
     if doc_type:
         extra_filters += " AND d.doc_type = :doc_type"
         params["doc_type"] = doc_type
+
+    # Metadata filter — query JSONB frontmatter fields
+    # E.g. {"ampel": "grün"} → WHERE d.doc_metadata->>'ampel' = 'grün'
+    if metadata_filter:
+        for i, (mkey, mval) in enumerate(metadata_filter.items()):
+            pname = f"meta_{i}"
+            extra_filters += (
+                f" AND d.doc_metadata->>'{mkey}' = :{pname}"
+            )
+            params[pname] = mval
 
     if principal_id:
         extra_filters += (
@@ -212,6 +223,7 @@ async def search(
     principal_id: str | None = None,
     source_type: str | None = None,
     doc_type: str | None = None,
+    metadata_filter: dict[str, str] | None = None,
 ) -> list[SearchResult]:
     """High-level search: embed query, then hybrid search."""
     embeddings = await embedding_provider.embed([query])
@@ -226,4 +238,5 @@ async def search(
         principal_id=principal_id,
         source_type=source_type,
         doc_type=doc_type,
+        metadata_filter=metadata_filter,
     )

@@ -123,6 +123,7 @@ async def retrieve(
             principal_id=request.principal_id,
             source_type=request.source_type,
             doc_type=request.doc_type,
+            metadata_filter=request.metadata_filter,
         )
         search_results = await reranker.rerank(
             request.query, search_results, request.top_k,
@@ -245,6 +246,8 @@ async def submit_feedback(
             document_id=uuid.UUID(feedback.document_id),
             rating=feedback.rating,
             tenant_id=tenant_id,
+            outcome=feedback.outcome,
+            outcome_context=feedback.outcome_context,
         ),
     )
     return {"status": "recorded"}

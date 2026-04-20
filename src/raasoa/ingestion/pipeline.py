@@ -52,8 +52,10 @@ async def ingest_file(
         return doc, None
 
     now = datetime.now(UTC)
+    is_version_update = False  # Track if this is an update, not a new doc
 
     if row:
+        is_version_update = True
         doc = await session.get(Document, row.id)
         if doc is None:
             raise ValueError(f"Document {row.id} not found after existence check")
@@ -62,6 +64,7 @@ async def ingest_file(
         doc.title = parsed.title
         doc.last_synced_at = now
         doc.status = "processing"
+        doc.doc_metadata = parsed.frontmatter or None
 
         # Delete old chunks and quality findings
         await session.execute(
@@ -82,6 +85,7 @@ async def ingest_file(
             status="processing",
             embedding_model=embedding_provider.model_id,
             version=1,
+            doc_metadata=parsed.frontmatter or None,
         )
         session.add(doc)
         await session.flush()
@@ -165,7 +169,7 @@ async def ingest_file(
     doc.chunk_count = len(chunk_results)
     doc.last_embedded_at = now
 
-    # 10. Quality Gate
+    # 10. Quality Gate + Schema Check
     final_assessment: QualityAssessment | None = None
     if settings.quality_gate_enabled:
         final_assessment = await run_quality_gate(
@@ -176,6 +180,28 @@ async def ingest_file(
             embedded_count=embedded_count,
             chunk_hashes=chunk_hashes,
         )
+
+        # Schema check (pluggable, type-specific quality)
+        try:
+            from raasoa.quality.schema_checks import run_schema_check
+
+            schema_result = run_schema_check(
+                doc_type_hint=parsed.metadata.get("format"),
+                frontmatter=parsed.frontmatter,
+                content=parsed.full_text,
+            )
+            if (
+                schema_result
+                and schema_result.score_penalty > 0
+                and doc.quality_score is not None
+            ):
+                doc.quality_score = max(
+                    0.0,
+                    doc.quality_score - schema_result.score_penalty,
+                )
+        except Exception:
+            pass  # Schema check is best-effort
+
         is_quarantined = final_assessment.publish_decision == "quarantined"
         doc.status = "quarantined" if is_quarantined else "indexed"
     else:
@@ -184,8 +210,8 @@ async def ingest_file(
 
     await session.commit()
 
-    # 11. Conflict Detection (after commit, on committed data)
-    if settings.conflict_detection_enabled and embeddings:
+    # 11. Conflict Detection (skip for version updates — those are supersessions, not conflicts)
+    if settings.conflict_detection_enabled and embeddings and not is_version_update:
         try:
             from raasoa.quality.conflicts import detect_conflicts
 

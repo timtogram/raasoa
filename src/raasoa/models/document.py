@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import REAL, DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from raasoa.models.base import Base, UUIDMixin
@@ -47,6 +47,9 @@ class Document(UUIDMixin, Base):
         Text, default="auto_published", server_default="auto_published"
     )
     quality_score: Mapped[float | None] = mapped_column(REAL)
+    doc_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+        "doc_metadata", JSONB, default=None,
+    )  # Structured metadata from frontmatter — queryable
     conflict_status: Mapped[str] = mapped_column(Text, default="none", server_default="none")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

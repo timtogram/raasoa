@@ -35,6 +35,62 @@ class ParsedDocument:
     full_text: str
     sections: list[ParsedSection] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    frontmatter: dict[str, Any] = field(default_factory=dict)
+
+
+def extract_frontmatter(content: str) -> tuple[dict[str, Any], str]:
+    """Extract YAML frontmatter from markdown/text content.
+
+    Frontmatter is the block between --- markers at the start of a file.
+    Returns (frontmatter_dict, content_without_frontmatter).
+
+    The frontmatter is stored as structured metadata, NOT chunked.
+    This enables queries like: metadata->>'ampel' = 'grün'
+    """
+    stripped = content.strip()
+    if not stripped.startswith("---"):
+        return {}, content
+
+    # Find closing ---
+    end_idx = stripped.find("\n---", 3)
+    if end_idx == -1:
+        return {}, content
+
+    yaml_block = stripped[3:end_idx].strip()
+    remaining = stripped[end_idx + 4:].strip()
+
+    # Parse YAML (simple key: value, no external dependency)
+    frontmatter: dict[str, Any] = {}
+    for line in yaml_block.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" in line:
+            key, _, value = line.partition(":")
+            key = key.strip().lower().replace(" ", "_")
+            value = value.strip()
+
+            # Strip quotes
+            if value and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+
+            # Parse lists (- item format)
+            if value == "":
+                # Could be a list — collect indented lines
+                continue
+
+            # Parse booleans
+            if value.lower() in ("true", "yes"):
+                frontmatter[key] = True
+            elif value.lower() in ("false", "no"):
+                frontmatter[key] = False
+            # Parse numbers
+            elif value.replace(".", "", 1).replace("-", "", 1).isdigit():
+                frontmatter[key] = float(value) if "." in value else int(value)
+            else:
+                frontmatter[key] = value
+
+    return frontmatter, remaining
 
 
 def _table_to_markdown(headers: list[str], rows: list[list[str]]) -> str:
@@ -57,14 +113,27 @@ def _table_to_markdown(headers: list[str], rows: list[list[str]]) -> str:
 
 
 def parse_text(content: str, filename: str) -> ParsedDocument:
-    """Parse plain text, markdown, or similar formats."""
-    lines = content.strip().split("\n")
-    title = lines[0].strip("# ").strip() if lines else filename
+    """Parse plain text, markdown, or similar formats.
+
+    Extracts YAML frontmatter as structured metadata (not chunked).
+    """
+    frontmatter, body = extract_frontmatter(content)
+
+    lines = body.strip().split("\n")
+    title = frontmatter.get("title") or frontmatter.get("name")
+    if not title:
+        title = lines[0].strip("# ").strip() if lines else filename
+
+    meta: dict[str, Any] = {"format": "text", "filename": filename}
+    # Merge frontmatter into metadata (frontmatter takes precedence)
+    meta.update(frontmatter)
+
     return ParsedDocument(
         title=title,
-        full_text=content,
-        sections=[ParsedSection(text=content, title=title)],
-        metadata={"format": "text", "filename": filename},
+        full_text=body,  # Body WITHOUT frontmatter — not chunked
+        sections=[ParsedSection(text=body, title=title)],
+        metadata=meta,
+        frontmatter=frontmatter,
     )
 
 

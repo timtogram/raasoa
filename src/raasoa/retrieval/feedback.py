@@ -32,8 +32,10 @@ class FeedbackSignal:
     query: str
     chunk_id: uuid.UUID
     document_id: uuid.UUID
-    rating: float  # -1.0 to 1.0 (negative=bad, 0=neutral, positive=good)
+    rating: float  # -1.0 to 1.0
     tenant_id: uuid.UUID
+    outcome: str | None = None  # success/failure/partial
+    outcome_context: str | None = None
 
 
 async def store_feedback(
