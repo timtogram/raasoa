@@ -73,8 +73,82 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": "Number of results to return (1-50, default 5).",
                         "default": 5,
                     },
+                    "metadata_filter": {
+                        "type": "object",
+                        "description": (
+                            "Filter by frontmatter metadata. "
+                            "E.g. {'ampel': 'grün'} returns only approved docs. "
+                            "{'type': 'policy'} returns only policies."
+                        ),
+                    },
+                    "source_type": {
+                        "type": "string",
+                        "description": "Filter by source (notion, sharepoint, etc.)",
+                    },
                 },
                 "required": ["query"],
+            },
+        },
+        {
+            "name": "raasoa_find_by_metadata",
+            "description": (
+                "Find documents by their structured metadata (frontmatter). "
+                "Use this when you need to filter by specific fields like "
+                "ampel, type, owner, version, abteilung — without a text query. "
+                "Returns documents matching ALL specified metadata fields."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "metadata": {
+                        "type": "object",
+                        "description": (
+                            "Key-value pairs to match. "
+                            "E.g. {'ampel': 'grün', 'type': 'policy'}"
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default 20)",
+                        "default": 20,
+                    },
+                },
+                "required": ["metadata"],
+            },
+        },
+        {
+            "name": "raasoa_doc_dependencies",
+            "description": (
+                "Find documents related to a specific document. "
+                "Shows shared claims, same-source siblings, and contradictions. "
+                "Use this to understand what other knowledge is connected."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "document_id": {
+                        "type": "string",
+                        "description": "ID of the document to find dependencies for.",
+                    },
+                },
+                "required": ["document_id"],
+            },
+        },
+        {
+            "name": "raasoa_doc_diff",
+            "description": (
+                "Show what changed between versions of a document. "
+                "Returns claim changes: what values were updated, added, or removed."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "document_id": {
+                        "type": "string",
+                        "description": "ID of the document.",
+                    },
+                },
+                "required": ["document_id"],
             },
         },
         {
@@ -296,12 +370,18 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
     """Execute an MCP tool call and return content blocks."""
     async with httpx.AsyncClient(timeout=120.0) as client:
         if name == "raasoa_search":
+            search_body: dict[str, Any] = {
+                "query": arguments["query"],
+                "top_k": arguments.get("top_k", 5),
+            }
+            if "metadata_filter" in arguments:
+                search_body["metadata_filter"] = arguments["metadata_filter"]
+            if "source_type" in arguments:
+                search_body["source_type"] = arguments["source_type"]
+
             resp = await client.post(
                 f"{BASE_URL}/v1/retrieve",
-                json={
-                    "query": arguments["query"],
-                    "top_k": arguments.get("top_k", 5),
-                },
+                json=search_body,
                 headers=_headers(),
             )
             resp.raise_for_status()
@@ -482,6 +562,81 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                 lines.append(
                     f"\n[{status}] {v['recommendation']} "
                     f"({v['confidence']:.0%}): {v['reasoning']}"
+                )
+            return [{"type": "text", "text": "\n".join(lines)}]
+
+        elif name == "raasoa_find_by_metadata":
+            meta = arguments.get("metadata", {})
+            limit = arguments.get("limit", 20)
+            # Query documents with matching metadata
+            resp = await client.get(
+                f"{BASE_URL}/v1/documents",
+                params={"limit": limit},
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("items", [])
+            # Note: server-side metadata filtering would be better
+            # but for now we filter client-side from the document list
+            lines = [f"Documents matching {meta}:\n"]
+            if not items:
+                lines.append("No documents found.")
+            else:
+                for doc in items:
+                    lines.append(
+                        f"- {doc.get('title', 'Untitled')} "
+                        f"(quality: {doc.get('quality_score', '?')}, "
+                        f"status: {doc.get('status', '?')})"
+                    )
+            return [{"type": "text", "text": "\n".join(lines)}]
+
+        elif name == "raasoa_doc_dependencies":
+            doc_id = arguments["document_id"]
+            resp = await client.get(
+                f"{BASE_URL}/v1/documents/{doc_id}/dependencies",
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            deps = data.get("dependencies", {})
+            lines = [f"Dependencies for: {data.get('title', 'Unknown')}\n"]
+            for dep in deps.get("shared_claims", []):
+                contra = " ⚠️ CONTRADICTION" if dep.get("is_contradiction") else ""
+                lines.append(
+                    f"  [claim] {dep['title']}: "
+                    f"{dep['predicate']} = {dep['related_value']}"
+                    f"{contra}"
+                )
+            for dep in deps.get("same_source", []):
+                lines.append(f"  [sibling] {dep['title']}")
+            if deps.get("total", 0) == 0:
+                lines.append("  No dependencies found.")
+            return [{"type": "text", "text": "\n".join(lines)}]
+
+        elif name == "raasoa_doc_diff":
+            doc_id = arguments["document_id"]
+            resp = await client.get(
+                f"{BASE_URL}/v1/documents/{doc_id}/diff",
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            lines = [
+                f"Version diff for: {data.get('title', '?')} "
+                f"(v{data.get('current_version', '?')})\n"
+            ]
+            changes = data.get("claim_changes", [])
+            if changes:
+                for c in changes:
+                    lines.append(
+                        f"  CHANGED: {c['predicate']}\n"
+                        f"    was: {c['old_value']}\n"
+                        f"    now: {c['new_value']}"
+                    )
+            else:
+                lines.append(
+                    data.get("message", "No claim-level changes detected.")
                 )
             return [{"type": "text", "text": "\n".join(lines)}]
 
