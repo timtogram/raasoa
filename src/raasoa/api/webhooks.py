@@ -149,7 +149,9 @@ async def webhook_ingest(
             )
 
         title = payload.title or payload.source_object_id
-        file_content = f"# {title}\n\n{payload.content}"
+        content = payload.content
+        # Don't prepend title if content has frontmatter (would break parsing)
+        file_content = content if content.strip().startswith("---") else f"# {title}\n\n{content}"
         file_data = file_content.encode("utf-8")
 
         provider = get_embedding_provider()
