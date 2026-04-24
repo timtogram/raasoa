@@ -76,6 +76,36 @@
 </div>
 {% endif %}
 
+{% if versions and versions|length > 0 %}
+<h2 class="text-lg font-semibold text-gray-900 mb-2">Version History</h2>
+<div class="bg-white rounded-lg border overflow-hidden mb-6">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Version</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Created</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Hash</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-600">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for v in versions %}
+            <tr class="border-t">
+                <td class="px-4 py-2 font-mono">v{{ v.version }}</td>
+                <td class="px-4 py-2 text-gray-500">{{ v.created_at }}</td>
+                <td class="px-4 py-2 text-xs text-gray-400 font-mono">{{ v.content_hash.hex()[:16] if v.content_hash else '' }}</td>
+                <td class="px-4 py-2">
+                    {% if v.version > 1 %}
+                    <a href="/dashboard/documents/{{ doc.id }}/diff?version_a={{ v.version - 1 }}&version_b={{ v.version }}" class="text-blue-600 hover:underline text-xs">Diff vs v{{ v.version - 1 }}</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {% if chunks %}
 <h2 class="text-lg font-semibold text-gray-900 mb-2">Chunks ({{ chunks|length }})</h2>
 <div class="space-y-2">

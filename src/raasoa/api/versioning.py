@@ -6,6 +6,7 @@ and governance: "What exactly changed in the travel policy update?"
 
 from __future__ import annotations
 
+import difflib
 import uuid
 from typing import Any
 
@@ -99,18 +100,40 @@ async def diff_versions(
         version_b = doc_row.version
         version_a = doc_row.version - 1
 
-    # Get chunk texts for both versions
-    # Current version = chunks in DB
-    # Previous version = we need to store chunk snapshots
-    # For now: compare current chunks with claim changes
-    chunks_result = await session.execute(
+    # Load both snapshots
+    snap_result = await session.execute(
         text(
-            "SELECT chunk_text FROM chunks "
-            "WHERE document_id = :did ORDER BY chunk_index"
+            "SELECT version, content_snapshot FROM document_versions "
+            "WHERE document_id = :did AND version IN (:va, :vb)"
         ),
-        {"did": document_id},
+        {"did": document_id, "va": version_a, "vb": version_b},
     )
-    _current_chunks = chunks_result.fetchall()  # Reserved for future text diff
+    snapshots = {r.version: (r.content_snapshot or "") for r in snap_result}
+    text_a = snapshots.get(version_a, "")
+    text_b = snapshots.get(version_b, "")
+
+    # Compute unified diff (text-level change audit)
+    unified_diff = "".join(
+        difflib.unified_diff(
+            text_a.splitlines(keepends=True),
+            text_b.splitlines(keepends=True),
+            fromfile=f"v{version_a}",
+            tofile=f"v{version_b}",
+            lineterm="",
+            n=3,
+        )
+    )
+    # Line-level stats for quick UI summary
+    diff_stats = {
+        "lines_added": sum(
+            1 for line in unified_diff.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        ),
+        "lines_removed": sum(
+            1 for line in unified_diff.splitlines()
+            if line.startswith("-") and not line.startswith("---")
+        ),
+    }
 
     # Get claims diff (what facts changed)
     claims_result = await session.execute(
@@ -183,6 +206,8 @@ async def diff_versions(
         "title": doc_row.title,
         "current_version": doc_row.version,
         "compared_versions": f"v{version_a} → v{version_b}",
+        "unified_diff": unified_diff,
+        "diff_stats": diff_stats,
         "claim_changes": changes,
         "current_claims": claims,
         "superseded_claims": superseded_claims,

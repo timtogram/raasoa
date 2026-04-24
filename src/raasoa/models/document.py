@@ -77,6 +77,7 @@ class DocumentVersion(UUIDMixin, Base):
     source_version: Mapped[str | None] = mapped_column(Text)
     parser_version: Mapped[str | None] = mapped_column(Text)
     chunking_strategy_version: Mapped[str | None] = mapped_column(Text)
+    content_snapshot: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

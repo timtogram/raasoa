@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,10 @@ async def ingest_file(
     file_data: bytes,
     filename: str,
     embedding_provider: EmbeddingProvider,
+    source_object_id: str | None = None,
+    source_url: str | None = None,
+    source_metadata: dict[str, Any] | None = None,
+    last_modified: datetime | None = None,
 ) -> tuple[Document, QualityAssessment | None]:
     """Full ingestion pipeline: Parse → Chunk → Hash → Embed → Quality Gate → Store.
 
@@ -35,7 +40,11 @@ async def ingest_file(
     doc_hash = file_hash(file_data)
 
     # 3. Check if document already exists
-    source_object_id = filename
+    source_object_id = source_object_id or filename
+    doc_metadata: dict[str, Any] | None = None
+    if source_metadata or parsed.frontmatter:
+        doc_metadata = dict(source_metadata or {})
+        doc_metadata.update(parsed.frontmatter or {})
     existing = await session.execute(
         text(
             "SELECT id, content_hash, version FROM documents "
@@ -49,6 +58,14 @@ async def ingest_file(
         doc = await session.get(Document, row.id)
         if doc is None:
             raise ValueError(f"Document {row.id} not found after existence check")
+        doc.last_synced_at = datetime.now(UTC)
+        if source_url is not None:
+            doc.source_url = source_url
+        if last_modified is not None:
+            doc.last_modified = last_modified
+        if doc_metadata is not None:
+            doc.doc_metadata = doc_metadata
+        await session.commit()
         return doc, None
 
     now = datetime.now(UTC)
@@ -62,9 +79,12 @@ async def ingest_file(
         doc.content_hash = doc_hash
         doc.version = row.version + 1
         doc.title = parsed.title
+        doc.doc_type = parsed.metadata.get("format", "unknown")
+        doc.source_url = source_url
+        doc.last_modified = last_modified
         doc.last_synced_at = now
         doc.status = "processing"
-        doc.doc_metadata = parsed.frontmatter or None
+        doc.doc_metadata = doc_metadata
 
         # Delete old chunks and quality findings
         await session.execute(
@@ -81,22 +101,25 @@ async def ingest_file(
             content_hash=doc_hash,
             title=parsed.title,
             doc_type=parsed.metadata.get("format", "unknown"),
+            source_url=source_url,
+            last_modified=last_modified,
             last_synced_at=now,
             status="processing",
             embedding_model=embedding_provider.model_id,
             version=1,
-            doc_metadata=parsed.frontmatter or None,
+            doc_metadata=doc_metadata,
         )
         session.add(doc)
         await session.flush()
 
-    # 4. Create document version
+    # 4. Create document version (with content snapshot for diffs)
     doc_version = DocumentVersion(
         document_id=doc.id,
         version=doc.version,
         content_hash=doc_hash,
         parser_version="v1",
         chunking_strategy_version="recursive-512-80",
+        content_snapshot=parsed.full_text,
     )
     session.add(doc_version)
 
@@ -183,24 +206,55 @@ async def ingest_file(
 
         # Schema check (pluggable, type-specific quality)
         try:
+            from raasoa.models.governance import QualityFinding
             from raasoa.quality.schema_checks import run_schema_check
 
+            # doc type comes from frontmatter (type: policy/skill/...)
+            fm = parsed.frontmatter or {}
+            doc_type_hint = fm.get("type")
+
             schema_result = run_schema_check(
-                doc_type_hint=parsed.metadata.get("format"),
-                frontmatter=parsed.frontmatter,
+                doc_type_hint=doc_type_hint,
+                frontmatter=fm,
                 content=parsed.full_text,
             )
-            if (
-                schema_result
-                and schema_result.score_penalty > 0
-                and doc.quality_score is not None
-            ):
-                doc.quality_score = max(
-                    0.0,
-                    doc.quality_score - schema_result.score_penalty,
-                )
+            if schema_result:
+                from raasoa.quality.checks import FindingResult
+
+                # Persist findings so they show in UI/API
+                for finding in schema_result.findings:
+                    session.add(QualityFinding(
+                        document_id=doc.id,
+                        finding_type=f"schema_{finding.check}",
+                        severity=finding.severity,
+                        details={
+                            "message": finding.message,
+                            "doc_type": schema_result.doc_type,
+                        },
+                    ))
+                    # Also add to assessment.findings so the API response
+                    # reflects them (they were missing before the post-commit
+                    # refresh because the assessment was built earlier).
+                    if final_assessment is not None:
+                        final_assessment.findings.append(FindingResult(
+                            finding_type=f"schema_{finding.check}",
+                            severity=finding.severity,
+                            details={
+                                "message": finding.message,
+                                "doc_type": schema_result.doc_type,
+                            },
+                        ))
+                if (
+                    schema_result.score_penalty > 0
+                    and doc.quality_score is not None
+                ):
+                    doc.quality_score = max(
+                        0.0,
+                        doc.quality_score - schema_result.score_penalty,
+                    )
         except Exception:
-            pass  # Schema check is best-effort
+            import logging
+            logging.getLogger(__name__).exception("Schema check failed")
 
         is_quarantined = final_assessment.publish_decision == "quarantined"
         doc.status = "quarantined" if is_quarantined else "indexed"

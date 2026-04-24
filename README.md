@@ -59,9 +59,10 @@ PDF, DOCX, XLSX, PPTX, CSV, HTML, TXT, Markdown. Tables preserved. Page numbers 
 
 ## Source Connectors
 
-- **Notion** — native, with delta-sync
-- **SharePoint** — native via Microsoft Graph
-- **Jira, Confluence** — webhook-based
+- **Notion** — native, recursive page-block sync with delta filtering
+- **SharePoint** — native via Microsoft Graph drive delta, folder paths, deletes
+- **Jira** — native via Atlassian Cloud JQL search
+- **Confluence** — webhook-based
 - **Custom** — any system with HTTP access
 
 ## For AI Agents
@@ -106,6 +107,8 @@ For production:
 EMBEDDING_PROVIDER=openai      # or azure-openai, cohere, ollama
 AUTH_ENABLED=true
 API_KEYS=sk-your-key:your-tenant-uuid
+CORS_ORIGINS=https://your-app.example.com
+SIGNUP_ENABLED=false
 ```
 
 Full config reference in `.env.example`.

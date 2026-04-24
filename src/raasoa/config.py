@@ -81,5 +81,8 @@ class Settings(BaseSettings):
     # Dashboard
     dashboard_enabled: bool = True
 
+    # HTTP
+    cors_origins: str = ""  # comma-separated origins; empty = allow all for local/dev
+
 
 settings = Settings()

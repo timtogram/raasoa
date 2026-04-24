@@ -129,7 +129,7 @@ def list_documents(ctx: click.Context, limit: int) -> None:
 def delete_document(ctx: click.Context, document_id: str) -> None:
     """Soft-delete a document."""
     client: RAGClient = ctx.obj["client"]
-    result = client.delete_document(document_id)
+    client.delete_document(document_id)
     console.print(f"[green]✓ Deleted document {document_id}[/green]")
 
 
@@ -296,11 +296,14 @@ def health(ctx: click.Context) -> None:
 
         emb = h.get("embedding", {})
         if emb:
-            console.print(f"  Embedding: {emb.get('provider', '?')} → {emb.get('detail', '?')}")
+            console.print(
+                f"  Embedding: {emb.get('provider', '?')} → {emb.get('detail', '?')}"
+            )
 
         claim = h.get("claim_extraction", {})
         if claim:
-            console.print(f"  Claims: {'enabled' if claim.get('enabled') else 'disabled'} → {claim.get('detail', '?')}")
+            enabled = "enabled" if claim.get("enabled") else "disabled"
+            console.print(f"  Claims: {enabled} → {claim.get('detail', '?')}")
     except Exception as e:
         console.print(f"[red]Connection failed:[/red] {e}")
 

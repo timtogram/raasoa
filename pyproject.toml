@@ -59,11 +59,16 @@ ignore = ["B008"]  # FastAPI Depends() in function defaults is idiomatic
 [tool.ruff.lint.per-file-ignores]
 "src/raasoa/quality/claims.py" = ["E501"]  # LLM prompt strings
 "src/raasoa/dashboard/routes.py" = ["E501"]  # SQL query strings
+"alembic/versions/*.py" = ["E501", "F401", "I001", "UP007", "UP035", "W291"]  # generated migrations
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["opentelemetry.*", "pgvector.*", "openpyxl.*", "rich.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

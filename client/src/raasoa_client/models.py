@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -12,9 +13,11 @@ class IngestResult:
     version: int
     embedding_model: str | None
     message: str
+    quality_score: float | None = None
+    review_status: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> IngestResult:
+    def from_dict(cls, data: dict[str, Any]) -> IngestResult:
         return cls(
             document_id=data["document_id"],
             title=data.get("title"),
@@ -23,6 +26,8 @@ class IngestResult:
             version=data["version"],
             embedding_model=data.get("embedding_model"),
             message=data["message"],
+            quality_score=data.get("quality_score"),
+            review_status=data.get("review_status"),
         )
 
 
@@ -38,7 +43,7 @@ class ChunkHit:
     lexical_rank: int | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> ChunkHit:
+    def from_dict(cls, data: dict[str, Any]) -> ChunkHit:
         return cls(
             chunk_id=data["chunk_id"],
             document_id=data["document_id"],
@@ -59,7 +64,7 @@ class ConfidenceInfo:
     answerable: bool
 
     @classmethod
-    def from_dict(cls, data: dict) -> ConfidenceInfo:
+    def from_dict(cls, data: dict[str, Any]) -> ConfidenceInfo:
         return cls(
             retrieval_confidence=data["retrieval_confidence"],
             source_count=data["source_count"],
@@ -75,7 +80,7 @@ class SearchResponse:
     confidence: ConfidenceInfo
 
     @classmethod
-    def from_dict(cls, data: dict) -> SearchResponse:
+    def from_dict(cls, data: dict[str, Any]) -> SearchResponse:
         return cls(
             query=data["query"],
             results=[ChunkHit.from_dict(r) for r in data["results"]],
@@ -90,13 +95,17 @@ class DocumentInfo:
     status: str
     chunk_count: int
     version: int
+    quality_score: float | None = None
+    index_tier: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> DocumentInfo:
+    def from_dict(cls, data: dict[str, Any]) -> DocumentInfo:
         return cls(
             id=data["id"],
             title=data.get("title"),
             status=data["status"],
             chunk_count=data["chunk_count"],
             version=data["version"],
+            quality_score=data.get("quality_score"),
+            index_tier=data.get("index_tier"),
         )

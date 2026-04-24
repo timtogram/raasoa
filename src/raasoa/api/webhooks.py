@@ -164,18 +164,11 @@ async def webhook_ingest(
                 file_data=file_data,
                 filename=payload.source_object_id,
                 embedding_provider=provider,
+                source_object_id=payload.source_object_id,
+                source_url=payload.source_url,
+                source_metadata=payload.metadata,
             )
             await session.refresh(doc)
-
-            if payload.source_url:
-                await session.execute(
-                    text(
-                        "UPDATE documents SET source_url = :url "
-                        "WHERE id = :did"
-                    ),
-                    {"url": payload.source_url, "did": doc.id},
-                )
-                await session.commit()
 
             return WebhookResponse(
                 status="processed",

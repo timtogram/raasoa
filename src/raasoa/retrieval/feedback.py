@@ -46,8 +46,10 @@ async def store_feedback(
     await session.execute(
         text(
             "INSERT INTO retrieval_feedback "
-            "(id, tenant_id, query_text, chunk_id, document_id, rating) "
-            "VALUES (:id, :tid, :query, :cid, :did, :rating)"
+            "(id, tenant_id, query_text, chunk_id, document_id, "
+            " rating, outcome, outcome_context) "
+            "VALUES (:id, :tid, :query, :cid, :did, "
+            " :rating, :outcome, :ctx)"
         ),
         {
             "id": uuid.uuid4(),
@@ -56,6 +58,8 @@ async def store_feedback(
             "cid": signal.chunk_id,
             "did": signal.document_id,
             "rating": signal.rating,
+            "outcome": signal.outcome,
+            "ctx": signal.outcome_context,
         },
     )
     await session.commit()

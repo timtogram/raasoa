@@ -207,12 +207,88 @@ async def document_detail(
         ),
         {"did": document_id},
     )
+    versions_result = await session.execute(
+        text(
+            "SELECT version, created_at, content_hash "
+            "FROM document_versions "
+            "WHERE document_id = :did ORDER BY version DESC"
+        ),
+        {"did": document_id},
+    )
     return templates.TemplateResponse(
         request, "document_detail.html",
         {"active": "documents", "doc": doc,
          "findings": findings_result.fetchall(),
          "claims": claims_result.fetchall(),
-         "chunks": chunks_result.fetchall()},
+         "chunks": chunks_result.fetchall(),
+         "versions": versions_result.fetchall()},
+    )
+
+
+@router.get("/documents/{document_id}/diff", response_class=HTMLResponse)
+async def document_diff(
+    request: Request,
+    document_id: uuid.UUID,
+    version_a: int = 0,
+    version_b: int = 0,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Show unified diff between two versions of a document."""
+    if redir := _check_auth(request):
+        return redir
+
+    import difflib
+    tid = DEFAULT_TENANT
+    doc_result = await session.execute(
+        text(
+            "SELECT id, title, version FROM documents "
+            "WHERE id = :did AND tenant_id = :tid"
+        ),
+        {"did": document_id, "tid": tid},
+    )
+    doc = doc_result.first()
+    if not doc:
+        return HTMLResponse("<h1>Document not found</h1>", status_code=404)
+
+    if doc.version < 2:
+        return HTMLResponse(
+            "<h1>Only one version exists — no diff available</h1>",
+            status_code=400,
+        )
+
+    if version_a == 0 or version_b == 0:
+        version_b = doc.version
+        version_a = doc.version - 1
+
+    snaps = await session.execute(
+        text(
+            "SELECT version, content_snapshot FROM document_versions "
+            "WHERE document_id = :did AND version IN (:va, :vb)"
+        ),
+        {"did": document_id, "va": version_a, "vb": version_b},
+    )
+    snap_map = {r.version: (r.content_snapshot or "") for r in snaps}
+    text_a = snap_map.get(version_a, "")
+    text_b = snap_map.get(version_b, "")
+
+    unified = "".join(difflib.unified_diff(
+        text_a.splitlines(keepends=True),
+        text_b.splitlines(keepends=True),
+        fromfile=f"v{version_a}",
+        tofile=f"v{version_b}",
+        lineterm="",
+        n=3,
+    ))
+
+    return templates.TemplateResponse(
+        request, "document_diff.html",
+        {
+            "active": "documents",
+            "doc": doc,
+            "version_a": version_a,
+            "version_b": version_b,
+            "unified_diff": unified,
+        },
     )
 
 
@@ -428,23 +504,24 @@ async def dashboard_sync_source(
     if not source:
         return JSONResponse(status_code=404, content={"detail": "Source not found"})
 
-    if source.source_type != "notion":
+    if source.source_type not in ("notion", "sharepoint", "jira"):
         return JSONResponse(content={
             "status": "unsupported",
             "message": f"Auto-sync not available for {source.source_type}. Use webhooks.",
         })
 
-    # Notion sync
-    from raasoa.api.sources import _sync_notion
+    from raasoa.api.sources import _sync_jira, _sync_notion, _sync_sharepoint
 
-    stats = await _sync_notion(
-        session=session,
-        tenant_id=_uuid_mod.UUID(tid),
-        source_id=source_id,
-        config=source.connection_config or {},
-        query=body.get("query", "*"),
-        limit=body.get("limit", 50),
-    )
+    tenant_uuid = _uuid_mod.UUID(tid)
+    config = source.connection_config or {}
+    query = body.get("query", "*")
+    limit = body.get("limit", 50)
+    if source.source_type == "notion":
+        stats = await _sync_notion(session, tenant_uuid, source_id, config, query, limit)
+    elif source.source_type == "sharepoint":
+        stats = await _sync_sharepoint(session, tenant_uuid, source_id, config, query, limit)
+    else:
+        stats = await _sync_jira(session, tenant_uuid, source_id, config, query, limit)
 
     return JSONResponse(content=stats)
 

@@ -65,7 +65,9 @@ async def run_scheduled_syncs() -> dict[str, Any]:
             try:
                 # Reuse the sync logic from the sources API
                 from raasoa.api.sources import (
+                    _sync_jira,
                     _sync_notion,
+                    _sync_sharepoint,
                 )
 
                 config = source.connection_config or {}
@@ -84,7 +86,36 @@ async def run_scheduled_syncs() -> dict[str, Any]:
                         "Sync complete: %s — %d synced",
                         source.name, sync_stats.get("synced", 0),
                     )
+                elif source.source_type == "sharepoint":
+                    sync_stats = await _sync_sharepoint(
+                        session,
+                        source.tenant_id,
+                        source.id,
+                        config,
+                        query="*",
+                        limit=500,
+                    )
+                    stats["synced"] += sync_stats.get("synced", 0)
+                    logger.info(
+                        "Sync complete: %s — %d synced",
+                        source.name, sync_stats.get("synced", 0),
+                    )
+                elif source.source_type == "jira":
+                    sync_stats = await _sync_jira(
+                        session,
+                        source.tenant_id,
+                        source.id,
+                        config,
+                        query="*",
+                        limit=500,
+                    )
+                    stats["synced"] += sync_stats.get("synced", 0)
+                    logger.info(
+                        "Sync complete: %s — %d synced",
+                        source.name, sync_stats.get("synced", 0),
+                    )
                 else:
+                    sync_stats = {"synced": 0}
                     logger.debug(
                         "Skipping %s — no auto-sync for %s",
                         source.name, source.source_type,
@@ -106,9 +137,7 @@ async def run_scheduled_syncs() -> dict[str, Any]:
                     {
                         "stype": source.source_type,
                         "sid": source.id,
-                        "count": sync_stats.get("synced", 0)
-                        if source.source_type == "notion"
-                        else 0,
+                        "count": sync_stats.get("synced", 0),
                     },
                 )
                 await session.commit()

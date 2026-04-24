@@ -76,7 +76,7 @@ async def source_tree(
                 "SELECT d.id, d.title, d.quality_score, "
                 "  d.review_status, d.conflict_status, "
                 "  d.chunk_count, d.source_url, "
-                "  d.source_object_id, "
+                "  d.source_object_id, d.doc_metadata, "
                 "  (SELECT COUNT(*) FROM claims c "
                 "   WHERE c.document_id = d.id "
                 "   AND c.status = 'active') AS claim_count "
@@ -94,22 +94,30 @@ async def source_tree(
 
         for doc in docs_result.fetchall():
             path = doc.source_object_id or ""
-            # Extract folder from path (e.g. "policies/travel.pdf" → "policies")
-            folder = ""
-            if "/" in path:
-                folder = "/".join(path.split("/")[:-1])
+            metadata = doc.doc_metadata or {}
+            source_path = (
+                metadata.get("source_path")
+                or metadata.get("path")
+                or path
+            )
+            folder = metadata.get("folder_path") or ""
+            if not folder and "/" in source_path:
+                folder = "/".join(source_path.split("/")[:-1])
 
             doc_entry = {
                 "id": str(doc.id),
                 "title": doc.title,
-                "quality_score": float(doc.quality_score)
-                if doc.quality_score
-                else None,
+                "quality_score": (
+                    float(doc.quality_score)
+                    if doc.quality_score is not None
+                    else None
+                ),
                 "review_status": doc.review_status,
                 "conflict_status": doc.conflict_status,
                 "chunk_count": doc.chunk_count,
                 "claim_count": doc.claim_count,
                 "source_url": doc.source_url,
+                "source_path": source_path,
                 "folder": folder or "(root)",
             }
             documents.append(doc_entry)
@@ -124,7 +132,7 @@ async def source_tree(
                 }
             f = folders[folder or "(root)"]
             f["doc_count"] += 1
-            if doc.quality_score:
+            if doc.quality_score is not None:
                 f["quality_scores"].append(float(doc.quality_score))
             if doc.conflict_status == "conflicts_detected":
                 f["conflict_count"] += 1
@@ -147,12 +155,12 @@ async def source_tree(
                 "indexed_count": r.indexed_count,
                 "quarantined_count": r.quarantined_count,
                 "conflicted_count": r.conflicted_count,
-                "avg_quality": float(r.avg_quality)
-                if r.avg_quality
-                else None,
-                "min_quality": float(r.min_quality)
-                if r.min_quality
-                else None,
+                "avg_quality": (
+                    float(r.avg_quality) if r.avg_quality is not None else None
+                ),
+                "min_quality": (
+                    float(r.min_quality) if r.min_quality is not None else None
+                ),
                 "total_chunks": r.total_chunks,
                 "active_claims": r.active_claims,
             },
