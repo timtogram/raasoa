@@ -201,15 +201,15 @@ async def tenant_dependency_graph(
     # Conflict-candidate edges overlay (even stronger signal)
     conflicts_result = await session.execute(
         text(
-            "SELECT document_id_a, document_id_b, conflict_type, confidence "
+            "SELECT document_a_id, document_b_id, conflict_type, confidence "
             "FROM conflict_candidates "
-            "WHERE tenant_id = :tid AND status IN ('pending', 'confirmed') "
+            "WHERE tenant_id = :tid AND status IN ('new', 'confirmed') "
             "LIMIT 500"
         ),
         {"tid": tenant_id},
     )
     for r in conflicts_result.fetchall():
-        a, b = str(r.document_id_a), str(r.document_id_b)
+        a, b = str(r.document_a_id), str(r.document_b_id)
         if a not in node_ids or b not in node_ids:
             continue
         edges.append({

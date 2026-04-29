@@ -1108,3 +1108,144 @@ async def reject_review_htmx(
         f'<div id="review-{review_id}" class="bg-red-50 rounded border '
         f'border-red-200 p-3 text-red-800 text-sm">Rejected</div>'
     )
+
+
+@router.get("/graph", response_class=HTMLResponse)
+async def graph_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Dependency graph visualization across the tenant."""
+    if redir := _check_auth(request):
+        return redir
+    return templates.TemplateResponse(
+        request, "graph.html",
+        {"active": "graph", "tenant_id": DEFAULT_TENANT},
+    )
+
+
+@router.get("/graph/data", response_class=JSONResponse)
+async def graph_data(
+    request: Request,
+    min_similarity: float = 0.5,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """JSON nodes/edges for the dashboard graph (uses DEFAULT_TENANT)."""
+    if redir := _check_auth(request):
+        return redir
+    tid = DEFAULT_TENANT
+
+    nodes_result = await session.execute(text(
+        "SELECT id, title, doc_type, quality_score, review_status, status "
+        "FROM documents WHERE tenant_id = :tid AND status != 'deleted' "
+        "ORDER BY created_at DESC LIMIT 200"
+    ), {"tid": tid})
+    nodes = [
+        {
+            "id": str(r.id),
+            "title": r.title,
+            "doc_type": r.doc_type,
+            "quality": float(r.quality_score) if r.quality_score is not None else None,
+            "review_status": r.review_status,
+            "status": r.status,
+        }
+        for r in nodes_result.fetchall()
+    ]
+    node_ids = {n["id"] for n in nodes}
+
+    edges_result = await session.execute(text(
+        "SELECT c1.document_id AS a, c2.document_id AS b, "
+        "       c1.predicate AS pred, c1.object_value AS va, "
+        "       c2.object_value AS vb, "
+        "       similarity(LOWER(c1.predicate), LOWER(c2.predicate)) AS sim "
+        "FROM claims c1 "
+        "JOIN claims c2 ON c1.document_id < c2.document_id "
+        "  AND (LOWER(c1.predicate) = LOWER(c2.predicate) "
+        "       OR similarity(LOWER(c1.predicate), LOWER(c2.predicate)) > :s) "
+        "WHERE c1.tenant_id = :tid AND c2.tenant_id = :tid "
+        "  AND c1.status = 'active' AND c2.status = 'active' LIMIT 500"
+    ), {"tid": tid, "s": min_similarity})
+    edges: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for r in edges_result.fetchall():
+        a, b = str(r.a), str(r.b)
+        if a not in node_ids or b not in node_ids:
+            continue
+        key = (a, b)
+        if key in seen:
+            continue
+        seen.add(key)
+        is_contradiction = (
+            (r.va or "").strip().lower() != (r.vb or "").strip().lower()
+        )
+        edges.append({
+            "source": a,
+            "target": b,
+            "type": "contradiction" if is_contradiction else "agreement",
+            "predicate": r.pred,
+            "similarity": float(r.sim) if r.sim is not None else 1.0,
+        })
+
+    conflicts_result = await session.execute(text(
+        "SELECT document_a_id, document_b_id, conflict_type, confidence "
+        "FROM conflict_candidates "
+        "WHERE tenant_id = :tid AND status IN ('new', 'confirmed') LIMIT 500"
+    ), {"tid": tid})
+    for r in conflicts_result.fetchall():
+        a, b = str(r.document_a_id), str(r.document_b_id)
+        if a not in node_ids or b not in node_ids:
+            continue
+        edges.append({
+            "source": a, "target": b, "type": "conflict",
+            "conflict_type": r.conflict_type,
+            "confidence": float(r.confidence) if r.confidence is not None else None,
+        })
+
+    return JSONResponse({"nodes": nodes, "edges": edges})
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(
+    request: Request,
+    action: str | None = None,
+    limit: int = 100,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Show recent audit events — incl. MCP policy denials, skill invocations."""
+    if redir := _check_auth(request):
+        return redir
+    tid = DEFAULT_TENANT
+    limit = max(10, min(int(limit), 500))
+
+    where = ["tenant_id = :tid"]
+    params: dict[str, Any] = {"tid": tid, "lim": limit}
+    if action:
+        where.append("action = :action")
+        params["action"] = action
+
+    result = await session.execute(text(
+        "SELECT id, actor, action, resource_type, resource_id, "
+        "       details, ip_address, created_at "
+        "FROM audit_events "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC LIMIT :lim"
+    ), params)
+    events = result.fetchall()
+
+    summary_result = await session.execute(text(
+        "SELECT action, COUNT(*) AS cnt "
+        "FROM audit_events WHERE tenant_id = :tid "
+        "GROUP BY action ORDER BY cnt DESC LIMIT 25"
+    ), {"tid": tid})
+    summary = summary_result.fetchall()
+
+    return templates.TemplateResponse(
+        request, "audit.html",
+        {
+            "active": "audit",
+            "events": events,
+            "summary": summary,
+            "selected_action": action,
+            "limit": limit,
+        },
+    )

@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: Lint + Type-check + Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: raasoa
+          POSTGRES_PASSWORD: raasoa
+          POSTGRES_DB: raasoa_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U raasoa"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://raasoa:raasoa@localhost:5432/raasoa_test
+      EMBEDDING_PROVIDER: ollama
+      EMBEDDING_DIMENSIONS: 768
+      AUTH_ENABLED: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra parsing
+
+      - name: Ruff (lint)
+        run: uv run ruff check src/ tests/
+
+      - name: Ruff (format check)
+        run: uv run ruff format --check src/ tests/
+        continue-on-error: true   # advisory; not all files are formatted yet
+
+      - name: Mypy (type check)
+        run: uv run mypy src/raasoa
+        continue-on-error: true   # advisory until baseline is clean
+
+      - name: Run migrations
+        run: uv run alembic upgrade head
+
+      - name: Pytest
+        run: uv run pytest tests/ -q --no-header -m "not requires_ollama"
+
+  docker-build:
+    name: Docker build (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: lint-and-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          tags: raasoa:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

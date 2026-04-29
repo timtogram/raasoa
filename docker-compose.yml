@@ -5,16 +5,17 @@ services:
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     environment:
-      POSTGRES_USER: raasoa
-      POSTGRES_PASSWORD: raasoa_dev
-      POSTGRES_DB: raasoa
+      POSTGRES_USER: ${POSTGRES_USER:-raasoa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-raasoa_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-raasoa}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U raasoa"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raasoa}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   minio:
     image: minio/minio:latest
@@ -23,8 +24,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: raasoa
-      MINIO_ROOT_PASSWORD: raasoa_dev
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-raasoa}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-raasoa_dev}
     command: server /data --console-address ":9001"
     volumes:
       - miniodata:/data
@@ -33,9 +34,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
+    platform: linux/amd64
     ports:
       - "11434:11434"
     volumes:
@@ -45,10 +48,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   # Pull embedding + chat models on first start, then exit
   ollama-pull:
     image: ollama/ollama:latest
+    platform: linux/amd64
     depends_on:
       ollama:
         condition: service_healthy
@@ -65,21 +70,28 @@ services:
   # RAASOA API — starts automatically with `docker compose up -d`
   api:
     build: .
+    platform: linux/amd64
+    image: raasoa:latest
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://raasoa:raasoa_dev@postgres:5432/raasoa
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raasoa}:${POSTGRES_PASSWORD:-raasoa_dev}@postgres:5432/${POSTGRES_DB:-raasoa}
       S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: raasoa
-      S3_SECRET_KEY: raasoa_dev
-      S3_BUCKET: raasoa-artifacts
-      EMBEDDING_PROVIDER: ollama
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-raasoa}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-raasoa_dev}
+      S3_BUCKET: ${S3_BUCKET:-raasoa-artifacts}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:8b}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       AUTH_ENABLED: ${AUTH_ENABLED:-false}
-      DASHBOARD_ENABLED: "true"
+      DASHBOARD_ENABLED: ${DASHBOARD_ENABLED:-true}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      RAASOA_MCP_DEFAULT_CLEARANCE: ${RAASOA_MCP_DEFAULT_CLEARANCE:-public}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,6 +102,32 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # RAASOA scheduler — runs sync, queue, retention loops
+  scheduler:
+    build: .
+    platform: linux/amd64
+    image: raasoa:latest
+    entrypoint: ["uv", "run", "python", "-m", "raasoa.worker.scheduler"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raasoa}:${POSTGRES_PASSWORD:-raasoa_dev}@postgres:5432/${POSTGRES_DB:-raasoa}
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-raasoa}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-raasoa_dev}
+      S3_BUCKET: ${S3_BUCKET:-raasoa-artifacts}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:8b}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SCHEDULER_SYNC_INTERVAL: ${SCHEDULER_SYNC_INTERVAL:-60}
+      SCHEDULER_QUEUE_INTERVAL: ${SCHEDULER_QUEUE_INTERVAL:-30}
+      SCHEDULER_RETENTION_INTERVAL: ${SCHEDULER_RETENTION_INTERVAL:-21600}
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

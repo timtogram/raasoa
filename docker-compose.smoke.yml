@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    platform: linux/amd64
+    ports:
+      - "5443:5432"
+    environment:
+      POSTGRES_USER: raasoa
+      POSTGRES_PASSWORD: smoke_pw
+      POSTGRES_DB: raasoa
+    volumes:
+      - smokedata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raasoa"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  api:
+    image: raasoa:smoke
+    platform: linux/amd64
+    ports:
+      - "8088:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://raasoa:smoke_pw@postgres:5432/raasoa
+      EMBEDDING_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBEDDING_MODEL: nomic-embed-text
+      OLLAMA_CHAT_MODEL: qwen3:8b
+      EMBEDDING_DIMENSIONS: 768
+      AUTH_ENABLED: "false"
+      DASHBOARD_ENABLED: "true"
+      RAASOA_MCP_DEFAULT_CLEARANCE: public
+      LOG_LEVEL: info
+      UVICORN_WORKERS: 1
+      # Skip S3 — not needed for smoke
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  scheduler:
+    image: raasoa:smoke
+    platform: linux/amd64
+    entrypoint: ["uv", "run", "python", "-m", "raasoa.worker.scheduler"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://raasoa:smoke_pw@postgres:5432/raasoa
+      EMBEDDING_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBEDDING_MODEL: nomic-embed-text
+      OLLAMA_CHAT_MODEL: qwen3:8b
+      EMBEDDING_DIMENSIONS: 768
+      LOG_LEVEL: info
+      SCHEDULER_SYNC_INTERVAL: 15
+      SCHEDULER_QUEUE_INTERVAL: 10
+      SCHEDULER_RETENTION_INTERVAL: 60
+    depends_on:
+      api:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  smokedata:

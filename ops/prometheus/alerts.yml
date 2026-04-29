@@ -1,0 +1,70 @@
+groups:
+  - name: raasoa-knowledge-quality
+    rules:
+      # Quality is the product's core promise — alert if avg score
+      # collapses across the corpus.
+      - alert: RaasoaAverageQualityCollapse
+        expr: raasoa_quality_average < 0.5
+        for: 30m
+        labels:
+          severity: warning
+          component: quality
+        annotations:
+          summary: "Average quality score is {{ $value | humanize }} — corpus is degrading."
+          description: |
+            More than half of indexed documents are scoring below the
+            quality publish threshold. Likely root cause: a new source
+            feeding low-signal content, or the embedding model returning
+            zero vectors. Inspect /dashboard/analytics and
+            /v1/quality-by-source.
+
+      - alert: RaasoaQuarantineSpike
+        expr: increase(raasoa_documents_quarantined[1h]) > 5
+        for: 15m
+        labels:
+          severity: warning
+          component: quality
+        annotations:
+          summary: "{{ $value }} documents quarantined in the past hour."
+          description: |
+            A spike in quarantined documents usually means a connector
+            is feeding malformed content. Check recent ingest logs.
+
+  - name: raasoa-conflicts
+    rules:
+      - alert: RaasoaUnresolvedConflictsBacklog
+        expr: raasoa_conflicts_open > 50
+        for: 1h
+        labels:
+          severity: warning
+          component: governance
+        annotations:
+          summary: "{{ $value }} unresolved conflicts in the queue."
+          description: |
+            Conflicts are accumulating faster than reviewers can resolve
+            them. Consider raising the LLM Judge auto-resolve threshold
+            or assigning more reviewers.
+
+  - name: raasoa-availability
+    rules:
+      - alert: RaasoaApiDown
+        expr: up{service="raasoa-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "RAASOA API is unreachable from Prometheus."
+          description: "Check container health and recent deploys."
+
+      - alert: RaasoaRetrievalLatencyHigh
+        expr: raasoa_retrieval_latency_ms > 2000
+        for: 10m
+        labels:
+          severity: warning
+          component: retrieval
+        annotations:
+          summary: "Retrieval p-avg latency at {{ $value }}ms (1h window)."
+          description: |
+            Hybrid search is taking >2s. Check pgvector health, the
+            ix_chunks_embedding index, and Ollama responsiveness.

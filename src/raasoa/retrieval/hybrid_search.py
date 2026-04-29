@@ -33,6 +33,8 @@ class SearchResult:
     # Location within document
     page_number: int | None = None
     source_location: str | None = None  # "Page 5", "Slide 3", "Sheet: Revenue"
+    # Document frontmatter metadata (for downstream policy / filtering)
+    doc_metadata: dict[str, Any] | None = None
 
 
 async def hybrid_search(
@@ -122,6 +124,7 @@ async def hybrid_search(
                 c.section_title, c.chunk_type,
                 c.page_number, c.source_location,
                 d.title AS doc_title, d.source_url,
+                d.doc_metadata AS doc_metadata,
                 src.source_type AS src_type, src.name AS src_name,
                 ROW_NUMBER() OVER (
                     ORDER BY c.embedding <=> :query_embedding
@@ -140,6 +143,7 @@ async def hybrid_search(
                 c.section_title, c.chunk_type,
                 c.page_number, c.source_location,
                 d.title AS doc_title, d.source_url,
+                d.doc_metadata AS doc_metadata,
                 src.source_type AS src_type, src.name AS src_name,
                 ROW_NUMBER() OVER (
                     ORDER BY ts_rank(
@@ -177,6 +181,7 @@ async def hybrid_search(
             COALESCE(s.page_number, l.page_number) AS page_number,
             COALESCE(s.source_location, l.source_location)
                 AS source_location,
+            COALESCE(s.doc_metadata, l.doc_metadata) AS doc_metadata,
             (
                 COALESCE(:semantic_weight * (1.0 / (:rrf_k + s.rn)), 0) +
                 COALESCE(:lexical_weight * (1.0 / (:rrf_k + l.rn)), 0) +
@@ -209,6 +214,7 @@ async def hybrid_search(
             source_name=row.src_name,
             page_number=row.page_number,
             source_location=row.source_location,
+            doc_metadata=row.doc_metadata,
         )
         for row in result.fetchall()
     ]

@@ -85,6 +85,16 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Filter by source (notion, sharepoint, etc.)",
                     },
+                    "agent_clearance": {
+                        "type": "string",
+                        "description": (
+                            "Policy-gate clearance for the calling agent. "
+                            "One of: public, internal, restricted, "
+                            "confidential, secret. Documents with a higher "
+                            "classification are filtered out and audit-logged."
+                        ),
+                        "default": "public",
+                    },
                 },
                 "required": ["query"],
             },
@@ -345,6 +355,41 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "raasoa_get_skill",
+            "description": (
+                "Look up a Skill (a structured work-instruction document) "
+                "by name or topic. Returns the full SKILL.md content "
+                "plus structured sections (zweck/sop/dod) and the "
+                "review/ampel status — so the agent can either follow "
+                "the SOP or refuse if the skill is not approved. "
+                "Use this when the user/agent asks 'how do I X' for any "
+                "process the company has documented."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Skill name or topic. Matched first against "
+                            "frontmatter 'name', then by title, then by "
+                            "semantic search inside type=skill documents."
+                        ),
+                    },
+                    "agent_clearance": {
+                        "type": "string",
+                        "description": (
+                            "Policy-gate clearance "
+                            "(public/internal/restricted/...). Skills "
+                            "above this level are filtered out."
+                        ),
+                        "default": "public",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
     ]
 
 
@@ -368,6 +413,12 @@ def _resource_definitions() -> list[dict[str, Any]]:
 
 async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
     """Execute an MCP tool call and return content blocks."""
+    from raasoa.mcp.policy import (
+        apply_policy_gate,
+        audit_denials,
+        env_default_clearance,
+    )
+
     async with httpx.AsyncClient(timeout=120.0) as client:
         if name == "raasoa_search":
             search_body: dict[str, Any] = {
@@ -386,6 +437,29 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             )
             resp.raise_for_status()
             data = resp.json()
+
+            # ── Policy-gate ─────────────────────────────────
+            # Server-side default acts as a hard ceiling; agent
+            # may request a *lower* clearance but never higher.
+            requested = (
+                arguments.get("agent_clearance")
+                or env_default_clearance()
+            )
+            allowed_hits, denied_hits = apply_policy_gate(
+                data.get("results", []),
+                clearance=requested,
+            )
+            data["results"] = allowed_hits
+            if denied_hits:
+                await audit_denials(
+                    BASE_URL, _headers(),
+                    tool="raasoa_search",
+                    query=arguments.get("query"),
+                    denied=denied_hits,
+                )
+                data.setdefault("policy", {})
+                data["policy"]["denied_count"] = len(denied_hits)
+                data["policy"]["clearance"] = requested
 
             # Format results for the AI agent
             parts = []
@@ -750,6 +824,189 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             for item in compiled:
                 lines.append(f"  • {item.get('topic', '?')}: {item.get('claim_count', 0)} claims")
             return [{"type": "text", "text": "\n".join(lines)}]
+
+        elif name == "raasoa_get_skill":
+            requested_name = (arguments.get("name") or "").strip()
+            if not requested_name:
+                return [{"type": "text", "text": "Skill name is required."}]
+
+            clearance = (
+                arguments.get("agent_clearance")
+                or env_default_clearance()
+            )
+
+            # 1) Exact metadata match: type=skill AND frontmatter name=...
+            resp = await client.post(
+                f"{BASE_URL}/v1/find_by_metadata",
+                json={
+                    "metadata": {"type": "skill", "name": requested_name},
+                    "limit": 5,
+                },
+                headers=_headers(),
+            )
+            skill_data: dict[str, Any] = (
+                resp.json() if resp.status_code == 200 else {}
+            )
+            matches = skill_data.get("documents") or []
+
+            # 2) Title fallback (still type=skill)
+            if not matches:
+                resp = await client.post(
+                    f"{BASE_URL}/v1/find_by_metadata",
+                    json={"metadata": {"type": "skill"}, "limit": 50},
+                    headers=_headers(),
+                )
+                if resp.status_code == 200:
+                    rn = requested_name.lower()
+                    all_skills = (resp.json() or {}).get("documents") or []
+                    matches = [
+                        d for d in all_skills
+                        if rn in (d.get("title") or "").lower()
+                    ]
+
+            # 3) Final fallback: hybrid search constrained to type=skill
+            if not matches:
+                resp = await client.post(
+                    f"{BASE_URL}/v1/retrieve",
+                    json={
+                        "query": requested_name,
+                        "top_k": 5,
+                        "metadata_filter": {"type": "skill"},
+                    },
+                    headers=_headers(),
+                )
+                if resp.status_code == 200:
+                    rdata = resp.json()
+                    seen: set[str] = set()
+                    for hit in rdata.get("results", []):
+                        did = hit.get("document_id")
+                        if did and did not in seen:
+                            seen.add(did)
+                            matches.append({
+                                "id": did,
+                                "title": hit.get("document_title"),
+                                "doc_metadata": hit.get("doc_metadata") or {},
+                            })
+
+            # Apply policy gate
+            from raasoa.mcp.policy import hit_is_allowed
+            allowed_matches: list[dict[str, Any]] = []
+            denied_matches: list[dict[str, Any]] = []
+            for m in matches:
+                meta = m.get("doc_metadata") or {}
+                hit_view = {
+                    "document_id": m.get("id"),
+                    "doc_metadata": meta,
+                }
+                if hit_is_allowed(hit_view, clearance):
+                    allowed_matches.append(m)
+                else:
+                    denied_matches.append(m)
+
+            if denied_matches:
+                await audit_denials(
+                    BASE_URL, _headers(),
+                    tool="raasoa_get_skill",
+                    query=requested_name,
+                    denied=[
+                        {
+                            "document_id": m.get("id"),
+                            "policy_reason": (
+                                f"classification="
+                                f"{(m.get('doc_metadata') or {}).get('classification')} "
+                                f"exceeds clearance={clearance}"
+                            ),
+                        }
+                        for m in denied_matches
+                    ],
+                )
+
+            if not allowed_matches:
+                msg = (
+                    f"No skill matches '{requested_name}'"
+                    + (
+                        f" (note: {len(denied_matches)} match(es) hidden by policy)"
+                        if denied_matches else ""
+                    )
+                    + ". Try a different name or check that "
+                      "the document has frontmatter `type: skill`."
+                )
+                return [{"type": "text", "text": msg}]
+
+            # Pick the best match (first), fetch full text
+            best = allowed_matches[0]
+            doc_id = best.get("id")
+            resp = await client.get(
+                f"{BASE_URL}/v1/documents/{doc_id}",
+                headers=_headers(),
+            )
+            if resp.status_code != 200:
+                return [{
+                    "type": "text",
+                    "text": f"Found skill '{best.get('title')}' "
+                            f"but failed to fetch content.",
+                }]
+            doc_data = resp.json()
+            chunks = doc_data.get("chunks") or []
+            full_text = "\n\n".join(
+                c.get("chunk_text") or c.get("text") or ""
+                for c in chunks
+            )
+            meta = best.get("doc_metadata") or doc_data.get("metadata") or {}
+
+            # Telemetry: record skill invocation as audit event
+            # (best-effort; never blocks the tool response)
+            import contextlib as _cl
+            with _cl.suppress(Exception):
+                await client.post(
+                    f"{BASE_URL}/v1/audit",
+                    json={
+                        "action": "skill.invoked",
+                        "resource_type": "document",
+                        "resource_id": str(doc_id),
+                        "details": {
+                            "skill_name": meta.get("name") or best.get("title"),
+                            "version": meta.get("version"),
+                            "ampel": meta.get("ampel"),
+                            "executor": meta.get("executor"),
+                        },
+                    },
+                    headers=_headers(),
+                )
+
+            ampel = meta.get("ampel", "?")
+            executor = meta.get("executor", "?")
+            version = meta.get("version", "?")
+            owner = meta.get("owner", "?")
+            review_status = doc_data.get("review_status", "?")
+
+            header = (
+                f"# Skill: {meta.get('name') or best.get('title')}\n"
+                f"Version: {version} | Ampel: {ampel} | "
+                f"Executor: {executor} | Owner: {owner}\n"
+                f"Review status: {review_status}\n"
+            )
+            if str(ampel).lower() in ("rot", "red", "blocked"):
+                header += (
+                    "\n⚠ This skill is currently RED — do not execute "
+                    "without explicit owner approval.\n"
+                )
+
+            other = ""
+            if len(allowed_matches) > 1:
+                other = (
+                    "\n\n(Other matching skills: "
+                    + ", ".join(
+                        m.get("title") or str(m.get("id"))
+                        for m in allowed_matches[1:5]
+                    )
+                    + ")"
+                )
+
+            return [{
+                "type": "text",
+                "text": header + "\n" + full_text + other,
+            }]
 
         else:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]

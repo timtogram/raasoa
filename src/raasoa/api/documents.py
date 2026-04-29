@@ -30,6 +30,57 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+@router.post("/find_by_metadata")
+async def find_by_metadata(
+    request: Request,
+    payload: dict[str, Any],
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Server-side metadata filter against ``documents.doc_metadata``.
+
+    Body: ``{"metadata": {"type": "skill", "name": "..."}, "limit": 20}``.
+    Returns matching documents with full ``doc_metadata`` so MCP / agents
+    can pick the right one without a second round trip.
+    """
+    tenant_id = await resolve_tenant_async(request)
+    metadata: dict[str, Any] = payload.get("metadata") or {}
+    limit = int(payload.get("limit") or 20)
+    limit = max(1, min(limit, 200))
+
+    where: list[str] = ["tenant_id = :tid", "status != 'deleted'"]
+    params: dict[str, Any] = {"tid": tenant_id, "lim": limit}
+    for i, (k, v) in enumerate(metadata.items()):
+        pname = f"mv{i}"
+        where.append(f"doc_metadata->>'{k}' = :{pname}")
+        params[pname] = str(v)
+
+    sql = text(
+        "SELECT id, title, doc_type, status, review_status, "
+        "       quality_score, doc_metadata, created_at "
+        "FROM documents "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC LIMIT :lim"
+    )
+    result = await session.execute(sql, params)
+    docs = [
+        {
+            "id": str(r.id),
+            "title": r.title,
+            "doc_type": r.doc_type,
+            "status": r.status,
+            "review_status": r.review_status,
+            "quality_score": (
+                float(r.quality_score)
+                if r.quality_score is not None else None
+            ),
+            "doc_metadata": r.doc_metadata or {},
+            "created_at": str(r.created_at),
+        }
+        for r in result.fetchall()
+    ]
+    return {"documents": docs, "matched_filter": metadata}
+
+
 @router.get("/documents", response_model=PaginatedDocuments)
 async def list_documents(
     request: Request,

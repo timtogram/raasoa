@@ -142,6 +142,27 @@ async def audit_log(
     ]
 
 
+@router.post("/audit")
+async def write_audit(
+    request: Request,
+    payload: dict[str, Any],
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Append an audit event. Used by MCP policy-gate (and other internal
+    callers) to record denials and other security-relevant events."""
+    tenant_id = await resolve_tenant_async(request)
+    from raasoa.middleware.audit import audit
+    await audit(
+        session, tenant_id, request,
+        payload.get("action", "unknown"),
+        payload.get("resource_type", "unknown"),
+        payload.get("resource_id"),
+        payload.get("details") or {},
+    )
+    await session.commit()
+    return {"ok": True}
+
+
 @router.get("/quality-by-source")
 async def quality_by_source(
     request: Request,

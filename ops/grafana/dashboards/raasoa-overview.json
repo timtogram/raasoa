@@ -1,0 +1,133 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Documents — total",
+      "id": 1,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "raasoa_documents_total", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"}
+    },
+    {
+      "type": "stat",
+      "title": "Documents — indexed",
+      "id": 2,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [{"expr": "raasoa_documents_indexed", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Documents — quarantined",
+      "id": 3,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "targets": [{"expr": "raasoa_documents_quarantined", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null},
+        {"color": "yellow", "value": 5},
+        {"color": "red", "value": 25}
+      ]}}}
+    },
+    {
+      "type": "gauge",
+      "title": "Average quality",
+      "id": 4,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "raasoa_quality_average", "refId": "A"}],
+      "fieldConfig": {"defaults": {
+        "min": 0, "max": 1, "unit": "percentunit",
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "red", "value": null},
+          {"color": "yellow", "value": 0.6},
+          {"color": "green", "value": 0.8}
+        ]}
+      }}
+    },
+    {
+      "type": "stat",
+      "title": "Open conflicts",
+      "id": 5,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "raasoa_conflicts_open", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null},
+        {"color": "yellow", "value": 10},
+        {"color": "red", "value": 50}
+      ]}}}
+    },
+    {
+      "type": "stat",
+      "title": "Pending reviews",
+      "id": 6,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 4},
+      "targets": [{"expr": "raasoa_reviews_pending", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Claims — active vs superseded",
+      "id": 7,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "raasoa_claims_active", "refId": "A", "legendFormat": "active"},
+        {"expr": "raasoa_claims_superseded", "refId": "B", "legendFormat": "superseded"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retrieval latency (1h avg, ms)",
+      "id": 8,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [{"expr": "raasoa_retrieval_latency_ms", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ms"}}
+    },
+    {
+      "type": "stat",
+      "title": "Knowledge index entries",
+      "id": 9,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+      "targets": [{"expr": "raasoa_knowledge_index_entries", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Chunks total",
+      "id": 10,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+      "targets": [{"expr": "raasoa_chunks_total", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Feedback signals (cumulative)",
+      "id": 11,
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 12, "x": 12, "y": 16},
+      "targets": [{"expr": "raasoa_feedback_total", "refId": "A"}]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["raasoa"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "RAASOA — Overview",
+  "uid": "raasoa-overview",
+  "version": 1,
+  "weekStart": ""
+}

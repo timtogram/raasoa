@@ -41,6 +41,8 @@ class ChunkHit(BaseModel):
     # Location within document
     page_number: int | None = None
     source_location: str | None = None
+    # Document frontmatter (used by MCP policy-gate, etc.)
+    doc_metadata: dict[str, Any] | None = None
 
 
 class ConfidenceInfo(BaseModel):
