@@ -40,3 +40,6 @@ docker-compose.override.yml
 
 # uv — the lock file MUST be committed for reproducible builds
 # (Dockerfile uses `uv sync --frozen`; CI restores from it). Do not ignore.
+
+# local prod-parity test env (never commit)
+.env.prodtest

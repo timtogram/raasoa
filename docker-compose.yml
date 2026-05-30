@@ -44,9 +44,12 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      # The ollama image ships no curl/wget — use the bundled CLI, which
+      # exits 0 only when the server is reachable.
+      test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 5s
+      start_period: 30s
       retries: 5
     restart: unless-stopped
 
@@ -128,6 +131,11 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # The scheduler is not an HTTP server, so the image's curl-based
+    # healthcheck would always fail. Disable it; liveness is visible in
+    # the logs and `restart: unless-stopped` recovers real crashes.
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
 volumes:

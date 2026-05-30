@@ -76,6 +76,75 @@ Text:
 JSON array of NEW claims only:"""
 
 
+def parse_claim_response(raw_response: str) -> list[dict[str, Any]]:
+    """Parse an LLM ``/api/generate`` response into validated claim dicts.
+
+    Pure, model-free, and defensive against the messy output of small
+    reasoning models:
+      - strips closed ``<think>…</think>`` blocks,
+      - strips an *unclosed* leading think block (model ran out of budget
+        mid-thought) by jumping to the first JSON delimiter,
+      - unwraps markdown ``json`` code fences,
+      - repairs a truncated array by closing after the last complete object.
+    Returns ``[]`` on anything unparseable.
+    """
+    import re
+
+    raw = (raw_response or "").strip()
+
+    # Closed thinking blocks first …
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    # … then an unclosed leading block: drop up to the first JSON delimiter.
+    if "<think>" in raw and "</think>" not in raw:
+        m = re.search(r"[\[{]", raw)
+        raw = raw[m.start():] if m else ""
+
+    # Markdown code fences
+    if "```json" in raw:
+        raw = raw.split("```json")[1].split("```")[0]
+    elif "```" in raw:
+        raw = raw.split("```")[1].split("```")[0]
+
+    start = raw.find("[")
+    if start == -1:
+        return []
+    end = raw.rfind("]") + 1
+    json_str = raw[start:end] if end > start else raw[start:]
+
+    # Repair truncated arrays — close after the last complete object.
+    if not json_str.endswith("]"):
+        last_brace = json_str.rfind("}")
+        if last_brace > 0:
+            json_str = json_str[: last_brace + 1] + "]"
+        else:
+            return []
+
+    try:
+        claims = json.loads(json_str)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(claims, list):
+        return []
+
+    valid_claims: list[dict[str, Any]] = []
+    for c in claims:
+        if (
+            isinstance(c, dict)
+            and "subject" in c
+            and "predicate" in c
+            and "object_value" in c
+        ):
+            valid_claims.append({
+                "subject": str(c["subject"]),
+                "predicate": str(c["predicate"]),
+                "object_value": str(c["object_value"]),
+                "confidence": float(c.get("confidence", 0.5)),
+                "valid_from": str(c["valid_from"]) if c.get("valid_from") else None,
+                "valid_until": str(c["valid_until"]) if c.get("valid_until") else None,
+            })
+    return valid_claims
+
+
 async def extract_claims_from_text(
     text: str,
     base_url: str = settings.ollama_base_url,
@@ -104,63 +173,18 @@ async def extract_claims_from_text(
                     "model": model,
                     "prompt": prompt,
                     "stream": False,
+                    # Natively disable reasoning for qwen3/other thinking
+                    # models. Without this, smaller variants (e.g. qwen3:4b)
+                    # spend the whole num_predict budget inside <think> and
+                    # never emit JSON. Ignored by models that don't think.
+                    "think": False,
                     "options": {"temperature": 0.1, "num_predict": 4096},
                 },
             )
             response.raise_for_status()
             data = response.json()
-            raw_response = data.get("response", "").strip()
+            valid_claims = parse_claim_response(data.get("response", ""))
 
-            # Strip thinking tags from models like qwen3
-            import re
-
-            raw_response = re.sub(
-                r"<think>.*?</think>", "", raw_response, flags=re.DOTALL
-            ).strip()
-
-            # Parse JSON from response — handle markdown code blocks
-            if "```json" in raw_response:
-                raw_response = raw_response.split("```json")[1].split("```")[0]
-            elif "```" in raw_response:
-                raw_response = raw_response.split("```")[1].split("```")[0]
-
-            # Find the JSON array in the response
-            start = raw_response.find("[")
-            end = raw_response.rfind("]") + 1
-            if start == -1:
-                return []
-
-            json_str = raw_response[start:end] if end > start else raw_response[start:]
-            # Handle truncated JSON — try to close the array
-            if not json_str.endswith("]"):
-                # Remove incomplete last object and close
-                last_brace = json_str.rfind("}")
-                if last_brace > 0:
-                    json_str = json_str[: last_brace + 1] + "]"
-                else:
-                    return []
-
-            claims = json.loads(json_str)
-            if not isinstance(claims, list):
-                return []
-
-            # Validate structure
-            valid_claims = []
-            for c in claims:
-                if (
-                    isinstance(c, dict)
-                    and "subject" in c
-                    and "predicate" in c
-                    and "object_value" in c
-                ):
-                    valid_claims.append({
-                        "subject": str(c["subject"]),
-                        "predicate": str(c["predicate"]),
-                        "object_value": str(c["object_value"]),
-                        "confidence": float(c.get("confidence", 0.5)),
-                        "valid_from": str(c["valid_from"]) if c.get("valid_from") else None,
-                        "valid_until": str(c["valid_until"]) if c.get("valid_until") else None,
-                    })
             # Track LLM call for metering
             if meter_tenant_id:
                 try:

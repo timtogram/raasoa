@@ -22,6 +22,34 @@ The default stack runs **everything in containers** — no host Python,
 no host Postgres. Ollama is the largest single component (~5 GB on
 disk for `qwen3:8b`).
 
+### ⚠️ LLM memory requirement (read this before sizing the host)
+
+The chat model powers **claim extraction, contradiction detection and
+the LLM Judge** — i.e. the entire governance layer. It must be loaded
+into RAM at query time:
+
+| Model | Disk | RAM to load | Use when |
+|---|---|---|---|
+| `nomic-embed-text` (embeddings) | ~0.3 GB | ~0.5 GB | always (search) |
+| `qwen3:8b` (chat, **default**) | ~5 GB | **~6 GB** | host has ≥ 16 GB |
+| `qwen3:4b` (chat, lighter) | ~2.5 GB | ~3.5 GB | host has 8–12 GB |
+| remote OpenAI-compatible | — | 0 (offloaded) | small host / managed LLM |
+
+If the chat model can't fit, **embeddings and search keep working**,
+but ingest logs `model requires more system memory (… GiB) than is
+available` and **0 claims are extracted**. Size the host so the chat
+model's RAM column fits *alongside* Postgres (~0.5 GB), the API
+(~0.5 GB) and OS headroom. The `8 GB` minimum below assumes
+`qwen3:4b`; the default `qwen3:8b` needs the `16 GB` tier.
+
+To switch the chat model, set `OLLAMA_CHAT_MODEL` in `.env`. To offload
+it entirely, point `EMBEDDING_PROVIDER`/LLM at a remote
+OpenAI-compatible endpoint (see `.env.example`).
+
+> Note on CPU-only hosts: qwen3 inference without a GPU is slow
+> (seconds–minutes per document). For production ingest throughput,
+> use a GPU host or a remote LLM for the chat path.
+
 ---
 
 ## 2. Production stack overview
@@ -285,6 +313,9 @@ sequential scans up to ~1M claims.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `health/ready` 503, "model not available" | Ollama-pull race | `docker compose run --rm ollama-pull` |
+| Ingest OK but **0 claims**, logs show `model requires more system memory` | Host RAM too small for the chat model | Switch `OLLAMA_CHAT_MODEL=qwen3:4b`, add RAM, or use a remote LLM (see §1) |
+| Ollama container stuck `unhealthy`, api never starts | Old healthcheck used `curl` (absent in the image) | Fixed in compose (`ollama list`); pull latest `docker-compose.yml` |
+| Scheduler shows `unhealthy` but logs tick fine | It inherited the API HTTP healthcheck | Fixed in compose (`healthcheck.disable`); harmless if you see it on an old file |
 | `UndefinedColumnError` after upgrade | Migration skipped on a fork | `docker compose run --rm api alembic upgrade head` |
 | Scheduler logs `tick failed` repeatedly | Postgres credentials drift | Recreate `.env`, `docker compose up -d` |
 | Search returns nothing | Embedding dimension mismatch | Check `EMBEDDING_DIMENSIONS` matches the model |
