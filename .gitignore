@@ -38,5 +38,5 @@ htmlcov/
 # Docker
 docker-compose.override.yml
 
-# uv
-uv.lock
+# uv — the lock file MUST be committed for reproducible builds
+# (Dockerfile uses `uv sync --frozen`; CI restores from it). Do not ignore.
