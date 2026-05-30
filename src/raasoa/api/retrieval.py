@@ -41,7 +41,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["retrieval"])
 
 
-@router.post("/retrieve", response_model=RetrieveResponse)
+@router.post(
+    "/retrieve",
+    response_model=RetrieveResponse,
+    operation_id="searchKnowledge",
+    summary="Search the knowledge base",
+    description=(
+        "Search trusted enterprise knowledge and return ranked, "
+        "source-attributed passages with a confidence score. Use this to "
+        "answer any question that depends on the organization's documents, "
+        "policies, or records. Supports metadata pre-filtering "
+        "(e.g. only approved documents) and per-source filtering."
+    ),
+)
 async def retrieve(
     http_request: Request,
     request: RetrieveRequest,

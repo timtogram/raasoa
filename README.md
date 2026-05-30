@@ -67,21 +67,36 @@ PDF, DOCX, XLSX, PPTX, CSV, HTML, TXT, Markdown. Tables preserved. Page numbers 
 
 ## For AI Agents
 
-RAASOA includes an MCP server. Connect Claude, Cursor, or any MCP-compatible agent:
+RAASOA exposes its knowledge to AI assistants two ways:
+
+- **MCP (stdio)** for local clients — Claude Desktop, Cursor.
+- **MCP (HTTP)** at `POST /mcp` for cloud clients — Claude.ai, LangDock,
+  Microsoft Copilot Studio.
+
+Local Claude Desktop / Cursor:
 
 ```json
 {
   "mcpServers": {
     "raasoa": {
       "command": "uv",
-      "args": ["run", "python", "-m", "raasoa.mcp"],
-      "env": { "RAASOA_URL": "http://localhost:8000" }
+      "args": ["run", "python", "-m", "raasoa.mcp.server"],
+      "cwd": "/absolute/path/to/raasoa",
+      "env": {
+        "RAASOA_URL": "https://your-raasoa-host",
+        "RAASOA_API_KEY": "sk-your-api-key"
+      }
     }
   }
 }
 ```
 
-Your agent now has 11 tools to search, evaluate, and reason about your knowledge — with source provenance on every result.
+Your agent gets 15 tools to search, evaluate, and reason about your
+knowledge — with source provenance on every result, and the MCP
+Policy-Gate enforcing per-agent data clearance.
+
+**Full setup for Claude.ai, LangDock and Copilot:** see
+[INTEGRATIONS.md](INTEGRATIONS.md).
 
 ## REST API
 

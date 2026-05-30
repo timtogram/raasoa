@@ -19,6 +19,7 @@ Usage:
     }
 """
 
+import contextvars
 import json
 import logging
 import sys
@@ -32,11 +33,19 @@ logger = logging.getLogger(__name__)
 BASE_URL = "http://localhost:8000"
 API_KEY = ""  # Set via RAASOA_API_KEY env
 
+# Per-request bearer token, set by the HTTP transport so concurrent
+# requests stay isolated (the stdio transport leaves this unset and falls
+# back to the global API_KEY). ContextVars are per-async-task safe.
+_request_api_key: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "raasoa_mcp_request_api_key", default=None,
+)
+
 
 def _headers() -> dict[str, str]:
     headers: dict[str, str] = {}
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
+    key = _request_api_key.get() or API_KEY
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     return headers
 
 
@@ -1057,6 +1066,64 @@ async def _handle_resource_read(uri: str) -> list[dict[str, Any]]:
             ]
 
         return [{"uri": uri, "mimeType": "text/plain", "text": f"Unknown resource: {uri}"}]
+
+
+async def handle_message_async(msg: dict[str, Any]) -> dict[str, Any] | None:
+    """Async JSON-RPC dispatch — used by the HTTP transport.
+
+    Mirrors ``_handle_message`` but awaits the handlers directly instead of
+    calling ``asyncio.run`` (which is illegal inside a running event loop,
+    e.g. a FastAPI request).
+    """
+    method = msg.get("method", "")
+    msg_id = msg.get("id")
+    params = msg.get("params", {})
+
+    if method == "initialize":
+        return _make_response(msg_id, {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}, "resources": {}},
+            "serverInfo": {"name": "raasoa", "version": "0.2.0"},
+        })
+    elif method == "notifications/initialized":
+        return None
+    elif method == "tools/list":
+        return _make_response(msg_id, {"tools": _tool_definitions()})
+    elif method == "resources/list":
+        return _make_response(msg_id, {"resources": _resource_definitions()})
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+        try:
+            content = await _handle_tool_call(tool_name, arguments)
+            return _make_response(msg_id, {"content": content})
+        except httpx.ConnectError:
+            return _make_response(msg_id, {
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        f"Cannot connect to RAASOA API at {BASE_URL}. "
+                        "Is the server running?"
+                    ),
+                }],
+                "isError": True,
+            })
+        except Exception as e:
+            return _make_response(msg_id, {
+                "content": [{"type": "text", "text": f"Error: {e}"}],
+                "isError": True,
+            })
+    elif method == "resources/read":
+        uri = params.get("uri", "")
+        try:
+            contents = await _handle_resource_read(uri)
+            return _make_response(msg_id, {"contents": contents})
+        except Exception as e:
+            return _make_error(msg_id, -32603, str(e))
+    elif method == "ping":
+        return _make_response(msg_id, {})
+    else:
+        return _make_error(msg_id, -32601, f"Method not found: {method}")
 
 
 def _handle_message(msg: dict[str, Any]) -> dict[str, Any] | None:

@@ -1,0 +1,2059 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RAASOA Knowledge Actions",
+    "version": "0.2.0",
+    "description": "Trusted retrieval and ingestion for enterprise knowledge. Authenticate with a Bearer API key."
+  },
+  "servers": [
+    {
+      "url": "https://YOUR-RAASOA-HOST"
+    }
+  ],
+  "paths": {
+    "/v1/ingest": {
+      "post": {
+        "tags": [
+          "ingestion"
+        ],
+        "summary": "Ingest a document into the knowledge base",
+        "description": "Upload a document (PDF, DOCX, Markdown, text, …). It is parsed, chunked, embedded, quality-checked and indexed for retrieval. Returns the quality score and any quality findings.",
+        "operationId": "ingestDocument",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_ingestDocument"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/retrieve": {
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Search the knowledge base",
+        "description": "Search trusted enterprise knowledge and return ranked, source-attributed passages with a confidence score. Use this to answer any question that depends on the organization's documents, policies, or records. Supports metadata pre-filtering (e.g. only approved documents) and per-source filtering.",
+        "operationId": "searchKnowledge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetrieveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrieveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AclEntryRequest": {
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "principal_type": {
+            "type": "string",
+            "title": "Principal Type"
+          },
+          "principal_id": {
+            "type": "string",
+            "title": "Principal Id"
+          },
+          "permission": {
+            "type": "string",
+            "title": "Permission",
+            "default": "read"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document_id",
+          "principal_type",
+          "principal_id"
+        ],
+        "title": "AclEntryRequest"
+      },
+      "AclEntryResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "principal_type": {
+            "type": "string",
+            "title": "Principal Type"
+          },
+          "principal_id": {
+            "type": "string",
+            "title": "Principal Id"
+          },
+          "permission": {
+            "type": "string",
+            "title": "Permission"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "document_id",
+          "principal_type",
+          "principal_id",
+          "permission"
+        ],
+        "title": "AclEntryResponse"
+      },
+      "Body_ingestDocument": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_ingestDocument"
+      },
+      "Body_login_post_dashboard_login_post": {
+        "properties": {
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "title": "Body_login_post_dashboard_login_post"
+      },
+      "Body_resolve_conflict_htmx_dashboard_api_conflicts__conflict_id__resolve_post": {
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "title": "Resolution"
+          },
+          "comment": {
+            "type": "string",
+            "title": "Comment",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolution"
+        ],
+        "title": "Body_resolve_conflict_htmx_dashboard_api_conflicts__conflict_id__resolve_post"
+      },
+      "ChunkDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "chunk_index": {
+            "type": "integer",
+            "title": "Chunk Index"
+          },
+          "chunk_text": {
+            "type": "string",
+            "title": "Chunk Text"
+          },
+          "section_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Section Title"
+          },
+          "chunk_type": {
+            "type": "string",
+            "title": "Chunk Type"
+          },
+          "token_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Count"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "embedded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedded At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "chunk_index",
+          "chunk_text",
+          "section_title",
+          "chunk_type",
+          "token_count",
+          "embedding_model",
+          "embedded_at"
+        ],
+        "title": "ChunkDetail"
+      },
+      "ChunkHit": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "section_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Section Title"
+          },
+          "chunk_type": {
+            "type": "string",
+            "title": "Chunk Type"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "semantic_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Rank"
+          },
+          "lexical_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Rank"
+          },
+          "document_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Title"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "source_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Type"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "source_location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Location"
+          },
+          "doc_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "document_id",
+          "text",
+          "section_title",
+          "chunk_type",
+          "score",
+          "semantic_rank",
+          "lexical_rank"
+        ],
+        "title": "ChunkHit"
+      },
+      "CompileRequest": {
+        "properties": {
+          "topic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic",
+            "description": "Compile a specific topic. Omit to compile all topics."
+          }
+        },
+        "type": "object",
+        "title": "CompileRequest"
+      },
+      "ConfidenceInfo": {
+        "properties": {
+          "retrieval_confidence": {
+            "type": "number",
+            "title": "Retrieval Confidence"
+          },
+          "source_count": {
+            "type": "integer",
+            "title": "Source Count"
+          },
+          "top_score": {
+            "type": "number",
+            "title": "Top Score"
+          },
+          "answerable": {
+            "type": "boolean",
+            "title": "Answerable"
+          }
+        },
+        "type": "object",
+        "required": [
+          "retrieval_confidence",
+          "source_count",
+          "top_score",
+          "answerable"
+        ],
+        "title": "ConfidenceInfo"
+      },
+      "ConflictCandidateResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "document_a_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document A Id"
+          },
+          "document_b_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document B Id"
+          },
+          "conflict_type": {
+            "type": "string",
+            "title": "Conflict Type"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "document_a_id",
+          "document_b_id",
+          "conflict_type",
+          "confidence",
+          "details",
+          "status",
+          "created_at"
+        ],
+        "title": "ConflictCandidateResponse"
+      },
+      "ConflictResolution": {
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "title": "Resolution",
+            "description": "keep_a, keep_b, keep_both, reject_both, dismiss. When keep_both: use context_a/context_b to explain WHY both are valid."
+          },
+          "comment": {
+            "type": "string",
+            "title": "Comment",
+            "default": ""
+          },
+          "context_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context A",
+            "description": "When keep_both: context for Doc A (e.g. 'applies to Marketing dept')"
+          },
+          "context_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context B",
+            "description": "When keep_both: context for Doc B (e.g. 'applies to Engineering dept')"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolution"
+        ],
+        "title": "ConflictResolution"
+      },
+      "DocumentSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "source_object_id": {
+            "type": "string",
+            "title": "Source Object Id"
+          },
+          "doc_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "index_tier": {
+            "type": "string",
+            "title": "Index Tier"
+          },
+          "quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Score"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "last_embedded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Embedded At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "source_object_id",
+          "doc_type",
+          "status",
+          "chunk_count",
+          "version",
+          "index_tier",
+          "quality_score",
+          "last_synced_at",
+          "last_embedded_at",
+          "created_at"
+        ],
+        "title": "DocumentSummary"
+      },
+      "DocumentWithChunks": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "source_object_id": {
+            "type": "string",
+            "title": "Source Object Id"
+          },
+          "doc_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "index_tier": {
+            "type": "string",
+            "title": "Index Tier"
+          },
+          "quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Score"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "last_embedded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Embedded At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "review_status": {
+            "type": "string",
+            "title": "Review Status"
+          },
+          "conflict_status": {
+            "type": "string",
+            "title": "Conflict Status"
+          },
+          "access_count": {
+            "type": "integer",
+            "title": "Access Count"
+          },
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/ChunkDetail"
+            },
+            "type": "array",
+            "title": "Chunks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "source_object_id",
+          "doc_type",
+          "status",
+          "chunk_count",
+          "version",
+          "index_tier",
+          "quality_score",
+          "last_synced_at",
+          "last_embedded_at",
+          "created_at",
+          "embedding_model",
+          "review_status",
+          "conflict_status",
+          "access_count",
+          "chunks"
+        ],
+        "title": "DocumentWithChunks"
+      },
+      "FeedbackRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Query"
+          },
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id",
+            "description": "ID of the chunk being rated"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id",
+            "description": "ID of the parent document"
+          },
+          "rating": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Rating",
+            "description": "Rating: -1.0 (unhelpful) to 1.0 (very helpful)"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome",
+            "description": "Outcome of using this result: success/failure/partial"
+          },
+          "outcome_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome Context",
+            "description": "What happened when the agent used this result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "chunk_id",
+          "document_id",
+          "rating"
+        ],
+        "title": "FeedbackRequest",
+        "description": "Feedback on a retrieval result — makes future searches smarter."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "IndexHit": {
+        "properties": {
+          "subject": {
+            "type": "string",
+            "title": "Subject"
+          },
+          "predicate": {
+            "type": "string",
+            "title": "Predicate"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence"
+          },
+          "source_documents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Source Documents",
+            "default": []
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "subject",
+          "predicate",
+          "value",
+          "confidence"
+        ],
+        "title": "IndexHit",
+        "description": "Direct answer from the knowledge index (no embedding needed)."
+      },
+      "IngestResponse": {
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Score"
+          },
+          "review_status": {
+            "type": "string",
+            "title": "Review Status",
+            "default": "auto_published"
+          },
+          "conflict_status": {
+            "type": "string",
+            "title": "Conflict Status",
+            "default": "none"
+          },
+          "quality_findings": {
+            "items": {
+              "$ref": "#/components/schemas/QualityFindingSummary"
+            },
+            "type": "array",
+            "title": "Quality Findings",
+            "default": []
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document_id",
+          "title",
+          "status",
+          "chunk_count",
+          "version",
+          "embedding_model",
+          "message"
+        ],
+        "title": "IngestResponse"
+      },
+      "KeyCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Human-readable key name"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes",
+            "description": "Permission scopes: all, read, write, admin",
+            "default": [
+              "all"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "KeyCreate"
+      },
+      "KeyCreated": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "key_prefix",
+          "scopes",
+          "is_active",
+          "last_used_at",
+          "created_at",
+          "key"
+        ],
+        "title": "KeyCreated",
+        "description": "Only returned on creation — contains the full key."
+      },
+      "KeyResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "key_prefix",
+          "scopes",
+          "is_active",
+          "last_used_at",
+          "created_at"
+        ],
+        "title": "KeyResponse"
+      },
+      "PaginatedDocuments": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "PaginatedDocuments",
+        "description": "Cursor-based paginated response for document listings."
+      },
+      "QualityFindingResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "finding_type": {
+            "type": "string",
+            "title": "Finding Type"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "document_id",
+          "finding_type",
+          "severity",
+          "details",
+          "created_at"
+        ],
+        "title": "QualityFindingResponse"
+      },
+      "QualityFindingSummary": {
+        "properties": {
+          "finding_type": {
+            "type": "string",
+            "title": "Finding Type"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "type": "object",
+        "required": [
+          "finding_type",
+          "severity"
+        ],
+        "title": "QualityFindingSummary"
+      },
+      "QualityReport": {
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Score"
+          },
+          "review_status": {
+            "type": "string",
+            "title": "Review Status"
+          },
+          "conflict_status": {
+            "type": "string",
+            "title": "Conflict Status"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/QualityFindingResponse"
+            },
+            "type": "array",
+            "title": "Findings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document_id",
+          "title",
+          "quality_score",
+          "review_status",
+          "conflict_status",
+          "findings"
+        ],
+        "title": "QualityReport"
+      },
+      "RetrieveRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "top_k": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "default": 5
+          },
+          "principal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Principal Id",
+            "description": "User/group ID for ACL filtering."
+          },
+          "source_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Type",
+            "description": "Pre-filter by source type (e.g. 'sharepoint', 'jira', 'notion')."
+          },
+          "doc_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Type",
+            "description": "Pre-filter by document type (e.g. 'pdf', 'policy')."
+          },
+          "metadata_filter": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata Filter",
+            "description": "Filter by frontmatter metadata. E.g. {'ampel': 'grün', 'executor': 'claude'}"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "RetrieveRequest"
+      },
+      "RetrieveResponse": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "routed_to": {
+            "type": "string",
+            "title": "Routed To",
+            "default": "rag"
+          },
+          "routing_reason": {
+            "type": "string",
+            "title": "Routing Reason",
+            "default": "default_rag"
+          },
+          "index_hits": {
+            "items": {
+              "$ref": "#/components/schemas/IndexHit"
+            },
+            "type": "array",
+            "title": "Index Hits",
+            "default": []
+          },
+          "structured": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StructuredAnswer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ChunkHit"
+            },
+            "type": "array",
+            "title": "Results",
+            "default": []
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/ConfidenceInfo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "confidence"
+        ],
+        "title": "RetrieveResponse"
+      },
+      "ReviewAction": {
+        "properties": {
+          "comment": {
+            "type": "string",
+            "title": "Comment",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ReviewAction"
+      },
+      "ReviewTaskResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "conflict_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflict Id"
+          },
+          "task_type": {
+            "type": "string",
+            "title": "Task Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "assigned_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned To"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "document_id",
+          "conflict_id",
+          "task_type",
+          "status",
+          "assigned_to",
+          "created_at",
+          "completed_at"
+        ],
+        "title": "ReviewTaskResponse"
+      },
+      "SourceCreate": {
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "title": "Source Type",
+            "description": "Type: notion, sharepoint, jira, confluence, webhook, custom"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Display name for this source"
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config",
+            "description": "Connection config (token, url, filters, etc.)"
+          },
+          "sync_interval_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Interval Minutes",
+            "description": "Auto-sync interval in minutes. None = manual only."
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_type",
+          "name"
+        ],
+        "title": "SourceCreate"
+      },
+      "SourceResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "config_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Config Keys"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          },
+          "last_sync": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync"
+          },
+          "sync_status": {
+            "type": "string",
+            "title": "Sync Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source_type",
+          "name",
+          "config_keys",
+          "document_count",
+          "last_sync",
+          "sync_status"
+        ],
+        "title": "SourceResponse"
+      },
+      "StructuredAnswer": {
+        "properties": {
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "data": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Data"
+          },
+          "query_type": {
+            "type": "string",
+            "title": "Query Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "answer",
+          "data",
+          "query_type"
+        ],
+        "title": "StructuredAnswer",
+        "description": "Response from structured (non-RAG) query."
+      },
+      "SyncRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "Search query to filter what gets synced",
+            "default": "*"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "title": "SyncRequest"
+      },
+      "SynthesisResponse": {
+        "properties": {
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "claim_count": {
+            "type": "integer",
+            "title": "Claim Count"
+          },
+          "source_documents": {
+            "type": "integer",
+            "title": "Source Documents"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "topic",
+          "summary",
+          "claim_count",
+          "source_documents",
+          "confidence",
+          "status",
+          "updated_at"
+        ],
+        "title": "SynthesisResponse"
+      },
+      "TenantCreated": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "plan": {
+            "type": "string",
+            "title": "Plan"
+          },
+          "api_key": {
+            "type": "string",
+            "title": "Api Key"
+          },
+          "api_key_prefix": {
+            "type": "string",
+            "title": "Api Key Prefix"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "name",
+          "plan",
+          "api_key",
+          "api_key_prefix"
+        ],
+        "title": "TenantCreated"
+      },
+      "TenantInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "plan": {
+            "type": "string",
+            "title": "Plan"
+          },
+          "quota": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Quota"
+          },
+          "usage_this_month": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Usage This Month"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "plan",
+          "quota",
+          "usage_this_month"
+        ],
+        "title": "TenantInfo"
+      },
+      "TenantSignup": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 2,
+            "title": "Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "plan": {
+            "type": "string",
+            "title": "Plan",
+            "default": "free"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "TenantSignup"
+      },
+      "TenantUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "title": "TenantUpdate"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WebhookPayload": {
+        "properties": {
+          "event": {
+            "type": "string",
+            "title": "Event",
+            "description": "Event type: document.created/updated/deleted"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Source identifier (sharepoint, jira, notion, custom)"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "source_object_id": {
+            "type": "string",
+            "title": "Source Object Id",
+            "description": "Unique identifier in the source system"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key",
+            "description": "Unique key to prevent duplicate processing on retries."
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event",
+          "source",
+          "source_object_id"
+        ],
+        "title": "WebhookPayload"
+      },
+      "WebhookResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "event": {
+            "type": "string",
+            "title": "Event"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "event",
+          "message"
+        ],
+        "title": "WebhookResponse"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "RAASOA API key as a Bearer token."
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ]
+}

@@ -54,7 +54,17 @@ async def _ensure_default_tenant_and_source(
     return tenant_id, source.id
 
 
-@router.post("/ingest", response_model=IngestResponse)
+@router.post(
+    "/ingest",
+    response_model=IngestResponse,
+    operation_id="ingestDocument",
+    summary="Ingest a document into the knowledge base",
+    description=(
+        "Upload a document (PDF, DOCX, Markdown, text, …). It is parsed, "
+        "chunked, embedded, quality-checked and indexed for retrieval. "
+        "Returns the quality score and any quality findings."
+    ),
+)
 async def ingest_document(
     request: Request,
     file: UploadFile = File(...),

@@ -69,6 +69,10 @@ app.include_router(source_tree_router)
 app.include_router(webhooks_router)
 app.include_router(versioning_router)
 app.include_router(dependencies_router)
+if settings.mcp_http_enabled:
+    from raasoa.mcp.http_transport import router as mcp_http_router
+
+    app.include_router(mcp_http_router)
 if settings.dashboard_enabled:
     from raasoa.dashboard.routes import router as dashboard_router
 

@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     # Dashboard
     dashboard_enabled: bool = True
 
+    # MCP — remote Streamable-HTTP transport (for LangDock, Copilot, Claude.ai)
+    mcp_http_enabled: bool = True
+    # Base URL the in-process MCP transport calls back into (the REST API).
+    # Defaults to the local app; override if the API is reached via another host.
+    mcp_internal_url: str = "http://localhost:8000"
+
     # HTTP
     cors_origins: str = ""  # comma-separated origins; empty = allow all for local/dev
 
