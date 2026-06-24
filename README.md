@@ -49,9 +49,20 @@ cp .env.example .env
 docker compose up -d
 ```
 
+> **First start downloads ~5 GB of local LLM models** (Ollama: embeddings +
+> chat) — this takes 5–10 minutes depending on your connection. Watch
+> progress with `docker compose logs -f ollama-pull`. `GET /health` tells
+> you when the models are ready. Everything runs locally; no data leaves
+> your machine.
+
 Dashboard: `http://localhost:8000/dashboard`
 
-Upload a document. See its quality score. Upload a contradicting one. Watch RAASOA catch it.
+**See it work in 60 seconds:** the empty dashboard offers a **Load Demo
+Data** button. It ingests three sample policies — two of which disagree
+about the meal allowance. RAASOA scores them, extracts the facts, and
+flags the contradiction under *Conflicts*. Then search for
+*"Wie hoch ist die Verpflegungspauschale?"* and watch the answer carry
+its sources.
 
 ## Supported Formats
 
@@ -91,7 +102,7 @@ Local Claude Desktop / Cursor:
 }
 ```
 
-Your agent gets 15 tools to search, evaluate, and reason about your
+Your agent gets 16 tools to search, evaluate, and reason about your
 knowledge — with source provenance on every result, and the MCP
 Policy-Gate enforcing per-agent data clearance.
 
@@ -105,6 +116,7 @@ Full OpenAPI docs at `/docs` once running. Key endpoints:
 ```
 POST /v1/ingest              # Upload documents
 POST /v1/retrieve            # Search with provenance
+POST /v1/answer              # Cited answer — or honest refusal
 GET  /v1/conflicts           # See contradictions
 POST /v1/conflicts/auto-resolve  # Let AI decide the easy ones
 GET  /v1/documents/{id}/quality  # Quality report

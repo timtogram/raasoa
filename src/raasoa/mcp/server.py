@@ -64,6 +64,40 @@ def _tool_definitions() -> list[dict[str, Any]]:
     """Define MCP tools exposed by RAASOA."""
     return [
         {
+            "name": "raasoa_answer",
+            "description": (
+                "Answer a question directly from the knowledge base, with "
+                "inline [n] citations to the source documents. Prefer this "
+                "over raasoa_search when you want a finished, grounded "
+                "answer. If the sources are too weak, it refuses "
+                "(answered=false) instead of guessing — so a refusal means "
+                "'not reliably in the knowledge base', not 'search failed'."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The question to answer.",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Sources to consider (1-20, default 6).",
+                        "default": 6,
+                    },
+                    "min_confidence": {
+                        "type": "number",
+                        "description": (
+                            "Refuse below this retrieval confidence "
+                            "(0.0-1.0, default 0.3). Raise for higher stakes."
+                        ),
+                        "default": 0.3,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
             "name": "raasoa_search",
             "description": (
                 "Search the knowledge base using hybrid search (semantic + keyword). "
@@ -429,7 +463,37 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
     )
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        if name == "raasoa_search":
+        if name == "raasoa_answer":
+            resp = await client.post(
+                f"{BASE_URL}/v1/answer",
+                json={
+                    "query": arguments["query"],
+                    "top_k": arguments.get("top_k", 6),
+                    "min_confidence": arguments.get("min_confidence", 0.3),
+                },
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("answered"):
+                reason = data.get("refusal_reason") or "insufficient sources"
+                return [{
+                    "type": "text",
+                    "text": (
+                        f"{data.get('answer')}\n\n"
+                        f"(Refused: {reason}. "
+                        f"Confidence: "
+                        f"{data['confidence']['retrieval_confidence']:.0%})"
+                    ),
+                }]
+            lines = [data["answer"], "", "Sources:"]
+            for c in data.get("citations", []):
+                loc = f" — {c['source_location']}" if c.get("source_location") else ""
+                title = c.get("document_title") or c["document_id"]
+                lines.append(f"  [{c['n']}] {title}{loc}")
+            return [{"type": "text", "text": "\n".join(lines)}]
+
+        elif name == "raasoa_search":
             search_body: dict[str, Any] = {
                 "query": arguments["query"],
                 "top_k": arguments.get("top_k", 5),

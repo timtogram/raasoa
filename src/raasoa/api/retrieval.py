@@ -28,6 +28,9 @@ from raasoa.retrieval.knowledge_index import lookup as index_lookup
 from raasoa.retrieval.query_router import QueryType, route_query
 from raasoa.retrieval.structured import structured_query
 from raasoa.schemas.retrieval import (
+    AnswerCitation,
+    AnswerRequest,
+    AnswerResponse,
     ChunkHit,
     ConfidenceInfo,
     FeedbackRequest,
@@ -236,6 +239,143 @@ async def retrieve(
             top_score=0.0,
             answerable=False,
         ),
+    )
+
+
+@router.post(
+    "/answer",
+    response_model=AnswerResponse,
+    operation_id="answerQuestion",
+    summary="Answer a question with cited sources",
+    description=(
+        "Retrieve from the knowledge base and synthesize a direct answer "
+        "grounded in the sources, with [n] citations. If the sources are "
+        "too weak to answer confidently, RAASOA refuses instead of "
+        "guessing (answered=false) — no hallucinations."
+    ),
+)
+async def answer(
+    http_request: Request,
+    request: AnswerRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AnswerResponse:
+    """Grounded answer with citations, or an honest refusal."""
+    tenant_id = await resolve_tenant_async(http_request)
+    get_retrieve_limiter().check(str(tenant_id))
+
+    from raasoa.retrieval.answer import (
+        REFUSAL_TEXT,
+        SourceChunk,
+        is_insufficient,
+        synthesize_answer,
+        valid_citation_numbers,
+    )
+
+    provider = get_embedding_provider()
+    reranker = get_reranker()
+    search_results = await search(
+        session=session,
+        query=request.query,
+        tenant_id=tenant_id,
+        embedding_provider=provider,
+        top_k=request.top_k * 3,
+        principal_id=request.principal_id,
+        source_type=request.source_type,
+        metadata_filter=request.metadata_filter,
+    )
+    search_results = await reranker.rerank(
+        request.query, search_results, request.top_k,
+    )
+    conf = compute_confidence(search_results)
+    conf_info = ConfidenceInfo(
+        retrieval_confidence=conf.retrieval_confidence,
+        source_count=conf.source_count,
+        top_score=conf.top_score,
+        answerable=conf.answerable,
+    )
+
+    # Track usage regardless of outcome.
+    from raasoa.middleware.metering import track_usage
+    await track_usage(session, tenant_id, "answer", 1, {})
+
+    # Honest refusal: too little to go on.
+    if not search_results or conf.retrieval_confidence < request.min_confidence:
+        return AnswerResponse(
+            query=request.query,
+            answered=False,
+            answer=REFUSAL_TEXT,
+            citations=[],
+            confidence=conf_info,
+            refusal_reason=(
+                f"retrieval_confidence {conf.retrieval_confidence:.2f} "
+                f"< min_confidence {request.min_confidence:.2f}"
+                if search_results else "no matching sources"
+            ),
+        )
+
+    chunks = [
+        SourceChunk(
+            n=i + 1,
+            chunk_id=str(r.chunk_id),
+            document_id=str(r.document_id),
+            document_title=r.document_title,
+            source_url=r.source_url,
+            source_location=r.source_location,
+            text=r.chunk_text,
+        )
+        for i, r in enumerate(search_results)
+    ]
+
+    raw = await synthesize_answer(request.query, chunks)
+
+    if is_insufficient(raw):
+        return AnswerResponse(
+            query=request.query,
+            answered=False,
+            answer=REFUSAL_TEXT,
+            citations=[],
+            confidence=conf_info,
+            refusal_reason="model judged the sources insufficient",
+        )
+
+    # Citation-required guard: a grounded answer MUST cite its sources.
+    # An answer with zero [n] markers is either leaked chain-of-thought
+    # (weak models reason in prose) or an ungrounded claim — refuse either
+    # way. This enforces the product promise ("every fact cited") and is
+    # model-agnostic, so it holds even when a small model ignores the
+    # "say INSUFFICIENT" instruction.
+    valid_used = valid_citation_numbers(raw, len(chunks))
+    if not valid_used:
+        return AnswerResponse(
+            query=request.query,
+            answered=False,
+            answer=REFUSAL_TEXT,
+            citations=[],
+            confidence=conf_info,
+            refusal_reason="answer was not grounded in any cited source",
+        )
+
+    citations = [
+        AnswerCitation(
+            n=c.n,
+            document_id=c.document_id,
+            document_title=c.document_title,
+            source_url=c.source_url,
+            source_location=c.source_location,
+            chunk_id=c.chunk_id,
+            quote=c.text[:280],
+        )
+        for c in chunks
+        if c.n in valid_used
+    ]
+
+    return AnswerResponse(
+        query=request.query,
+        answered=True,
+        answer=raw,
+        citations=citations,
+        confidence=conf_info,
+        refusal_reason=None,
     )
 
 

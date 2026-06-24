@@ -3,6 +3,47 @@
 {% block content %}
 <h1 class="text-2xl font-bold text-gray-900 mb-6">Knowledge Base Overview</h1>
 
+{% if stats.total_documents == 0 %}
+<div id="getting-started" class="bg-blue-50 border border-blue-200 rounded-lg p-6 mb-8">
+    <h2 class="text-lg font-semibold text-blue-900 mb-2">Welcome to RAASOA 👋</h2>
+    <p class="text-sm text-blue-800 mb-4">
+        Your knowledge base is empty. See what RAASOA does in under a minute:
+        load three sample policies — two of them contradict each other, and
+        RAASOA will catch it.
+    </p>
+    <ol class="text-sm text-blue-800 list-decimal list-inside mb-4 space-y-1">
+        <li>Load the demo documents (two travel policies that disagree on the meal allowance)</li>
+        <li>Watch the conflict appear under <span class="font-semibold">Conflicts</span></li>
+        <li>Try a search: <span class="font-mono bg-blue-100 px-1 rounded">Wie hoch ist die Verpflegungspauschale?</span></li>
+    </ol>
+    <div class="flex items-center gap-3">
+        <button id="load-demo-btn"
+            class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded"
+            onclick="loadDemo()">Load Demo Data</button>
+        <a href="/dashboard/upload" class="text-sm text-blue-700 hover:underline">…or upload your own document</a>
+        <span id="demo-status" class="text-sm text-blue-700"></span>
+    </div>
+</div>
+<script>
+async function loadDemo() {
+    const btn = document.getElementById('load-demo-btn');
+    const status = document.getElementById('demo-status');
+    btn.disabled = true;
+    status.textContent = 'Ingesting samples… (first run may take a moment while models load)';
+    try {
+        const resp = await fetch('/dashboard/api/load-demo', {method: 'POST'});
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'failed');
+        status.textContent = `Done: ${data.ingested.length} documents, ${data.open_conflicts} conflict(s) detected. Reloading…`;
+        setTimeout(() => window.location.reload(), 1200);
+    } catch (e) {
+        status.textContent = 'Failed: ' + e.message;
+        btn.disabled = false;
+    }
+}
+</script>
+{% endif %}
+
 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
     <div class="bg-white rounded-lg border p-5">
         <div class="text-sm text-gray-500">Documents</div>
@@ -52,6 +93,9 @@
             </tr>
         </thead>
         <tbody>
+            {% if not recent_docs %}
+            <tr><td colspan="6" class="px-4 py-6 text-center text-sm text-gray-500">No documents yet — load the demo data above or upload a file.</td></tr>
+            {% endif %}
             {% for doc in recent_docs %}
             <tr class="border-t hover:bg-gray-50">
                 <td class="px-4 py-2"><a href="/dashboard/documents/{{ doc.id }}" class="text-blue-600 hover:underline">{{ doc.title or '(untitled)' }}</a></td>

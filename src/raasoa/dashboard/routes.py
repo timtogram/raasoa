@@ -818,6 +818,74 @@ async def dashboard_ingest_proxy(
     })
 
 
+@router.post("/api/load-demo")
+async def dashboard_load_demo(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Ingest the bundled sample documents (incl. a built-in contradiction).
+
+    Gives a brand-new install something to show in under a minute: two
+    travel policies that disagree on the meal allowance, plus a security
+    policy. Conflict detection fires on the contradicting pair.
+    """
+    if _check_auth(request):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"},
+        )
+
+    import uuid as _uuid
+    from pathlib import Path as _Path
+
+    from raasoa.api.ingestion import _ensure_default_tenant_and_source
+    from raasoa.ingestion.pipeline import ingest_file
+    from raasoa.providers.factory import get_embedding_provider
+
+    samples_dir = (
+        _Path(__file__).parent.parent.parent.parent / "examples" / "samples"
+    )
+    sample_files = sorted(samples_dir.glob("*.md")) if samples_dir.is_dir() else []
+    if not sample_files:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "No sample documents bundled with this build."},
+        )
+
+    tid = _uuid.UUID(DEFAULT_TENANT)
+    tid, source_id = await _ensure_default_tenant_and_source(session, tid)
+    provider = get_embedding_provider()
+
+    results: list[dict[str, Any]] = []
+    for path in sample_files:
+        try:
+            doc, _assessment = await ingest_file(
+                session=session, tenant_id=tid, source_id=source_id,
+                file_data=path.read_bytes(), filename=path.name,
+                embedding_provider=provider,
+            )
+            await session.refresh(doc)
+            results.append({
+                "title": doc.title,
+                "document_id": str(doc.id),
+                "quality_score": doc.quality_score,
+                "conflict_status": doc.conflict_status,
+            })
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "Demo ingest failed for %s", path.name,
+            )
+            results.append({"title": path.name, "error": "ingest failed"})
+
+    conflicts = await session.execute(text(
+        "SELECT COUNT(*) FROM conflict_candidates WHERE tenant_id = :tid"
+    ), {"tid": tid})
+    return JSONResponse(content={
+        "ingested": results,
+        "open_conflicts": conflicts.scalar() or 0,
+    })
+
+
 @router.post("/api/search")
 async def dashboard_search_proxy(
     request: Request,

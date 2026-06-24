@@ -59,6 +59,48 @@ class StructuredAnswer(BaseModel):
     query_type: str
 
 
+class AnswerRequest(BaseModel):
+    """Ask a question and get a synthesized, source-cited answer."""
+
+    query: str = Field(..., min_length=1, max_length=2000)
+    top_k: int = Field(default=6, ge=1, le=20)
+    principal_id: str | None = Field(
+        default=None, description="User/group ID for ACL filtering.",
+    )
+    source_type: str | None = None
+    metadata_filter: dict[str, str] | None = None
+    min_confidence: float = Field(
+        default=0.3, ge=0.0, le=1.0,
+        description=(
+            "Below this retrieval confidence the service refuses to answer "
+            "instead of guessing. Raise it for higher-stakes use."
+        ),
+    )
+
+
+class AnswerCitation(BaseModel):
+    """A source backing the answer, referenced as [n] in the text."""
+
+    n: int
+    document_id: str
+    document_title: str | None = None
+    source_url: str | None = None
+    source_location: str | None = None
+    chunk_id: str
+    quote: str
+
+
+class AnswerResponse(BaseModel):
+    """A grounded answer — or an honest refusal when sources are too weak."""
+
+    query: str
+    answered: bool
+    answer: str
+    citations: list[AnswerCitation] = []
+    confidence: ConfidenceInfo
+    refusal_reason: str | None = None
+
+
 class FeedbackRequest(BaseModel):
     """Feedback on a retrieval result — makes future searches smarter."""
 

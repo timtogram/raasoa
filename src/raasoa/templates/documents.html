@@ -18,6 +18,12 @@
             </tr>
         </thead>
         <tbody>
+            {% if not documents %}
+            <tr><td colspan="8" class="px-4 py-6 text-center text-sm text-gray-500">
+                No documents yet. <a href="/dashboard" class="text-blue-600 hover:underline">Load the demo data</a>
+                or <a href="/dashboard/upload" class="text-blue-600 hover:underline">upload a file</a>.
+            </td></tr>
+            {% endif %}
             {% for doc in documents %}
             <tr class="border-t hover:bg-gray-50">
                 <td class="px-4 py-2"><a href="/dashboard/documents/{{ doc.id }}" class="text-blue-600 hover:underline">{{ doc.title or '(untitled)' }}</a></td>

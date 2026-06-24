@@ -43,7 +43,9 @@ async def health_check(session: AsyncSession = Depends(get_session)) -> dict[str
                         settings.ollama_embedding_model in m for m in models
                     )
                     embedding_detail = (
-                        "model_available" if embedding_ok else "model_not_found"
+                        "model_available" if embedding_ok
+                        else "model_not_found (first run? models may still be "
+                             "downloading — check `docker compose logs ollama-pull`)"
                     )
                 else:
                     embedding_detail = f"ollama_status_{resp.status_code}"
