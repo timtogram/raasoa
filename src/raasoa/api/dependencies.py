@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
 from raasoa.middleware.auth import resolve_tenant_async
+from raasoa.security.principal import acl_predicate_sql, resolve_principal_ids
 
 router = APIRouter(prefix="/v1", tags=["dependencies"])
 
@@ -29,20 +30,43 @@ async def get_dependencies(
     document_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Find documents related to this one via shared claims or references."""
-    tenant_id = await resolve_tenant_async(request)
+    """Find documents related to this one via shared claims or references.
 
-    # Verify document
+    A caller with legitimate access to `document_id` must not be able to
+    enumerate a restricted sibling/related document's title or claim
+    values through this endpoint — every sub-query below applies the same
+    ACL predicate to the *related* document (d2), not just the primary
+    lookup.
+    """
+    tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    params: dict[str, Any] = {"did": document_id, "tid": tenant_id}
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+
+    primary_acl = (
+        acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
+        if principal_ids is not None else ""
+    )
+    # Verify document (404, not 403, if the caller can't see it — don't
+    # leak that a restricted document exists).
     doc = await session.execute(
         text(
-            "SELECT id, title FROM documents "
-            "WHERE id = :did AND tenant_id = :tid"
+            "SELECT d.id, d.title FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.id = :did AND d.tenant_id = :tid"
+            f"{primary_acl}"
         ),
-        {"did": document_id, "tid": tenant_id},
+        params,
     )
     doc_row = doc.first()
     if not doc_row:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    related_acl = (
+        acl_predicate_sql(doc_alias="d2", source_alias="s2", tenant_id_param="tid")
+        if principal_ids is not None else ""
+    )
 
     # Find documents with overlapping claims. Use trigram similarity
     # (pg_trgm) so that slightly different LLM-extracted predicates
@@ -59,15 +83,17 @@ async def get_dependencies(
             "  AND (LOWER(c1.predicate) = LOWER(c2.predicate) "
             "       OR similarity(LOWER(c1.predicate), LOWER(c2.predicate)) > 0.45) "
             "JOIN documents d2 ON c2.document_id = d2.id "
+            "JOIN sources s2 ON s2.id = d2.source_id "
             "WHERE c1.document_id = :did "
             "  AND c1.status = 'active' "
             "  AND c2.status = 'active' "
             "  AND d2.tenant_id = :tid "
-            "  AND d2.status != 'deleted' "
+            "  AND d2.status != 'deleted'"
+            f"{related_acl} "
             "ORDER BY d2.id, sim DESC "
             "LIMIT 20"
         ),
-        {"did": document_id, "tid": tenant_id},
+        params,
     )
 
     claim_deps = [
@@ -89,16 +115,18 @@ async def get_dependencies(
         text(
             "SELECT d2.id, d2.title, d2.source_object_id "
             "FROM documents d2 "
+            "JOIN sources s2 ON s2.id = d2.source_id "
             "WHERE d2.source_id = ("
             "  SELECT source_id FROM documents WHERE id = :did"
             ") "
             "AND d2.id != :did "
             "AND d2.tenant_id = :tid "
-            "AND d2.status != 'deleted' "
+            "AND d2.status != 'deleted'"
+            f"{related_acl} "
             "ORDER BY d2.title "
             "LIMIT 10"
         ),
-        {"did": document_id, "tid": tenant_id},
+        params,
     )
 
     sibling_deps = [
@@ -133,18 +161,35 @@ async def tenant_dependency_graph(
 
     Returns ``{"nodes": [...], "edges": [...]}`` suitable for graph
     visualization. Edges come from shared claims and conflict candidates.
+
+    ACL filtering happens at the node level: a restricted document the
+    caller can't see never becomes a node, and every edge query already
+    discards edges referencing an id outside `node_ids` — so filtering
+    nodes alone is sufficient to keep restricted documents (and their
+    edges) out of the graph entirely.
     """
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    params: dict[str, Any] = {"tid": tenant_id, "lim": limit_nodes}
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+    acl_filter = (
+        acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
+        if principal_ids is not None else ""
+    )
 
-    # Nodes: all active tenant documents (bounded)
+    # Nodes: all active tenant documents visible to the caller (bounded)
     nodes_result = await session.execute(
         text(
-            "SELECT id, title, doc_type, quality_score, review_status, status "
-            "FROM documents "
-            "WHERE tenant_id = :tid AND status != 'deleted' "
-            "ORDER BY created_at DESC LIMIT :lim"
+            "SELECT d.id, d.title, d.doc_type, d.quality_score, "
+            "d.review_status, d.status "
+            "FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.tenant_id = :tid AND d.status != 'deleted'"
+            f"{acl_filter} "
+            "ORDER BY d.created_at DESC LIMIT :lim"
         ),
-        {"tid": tenant_id, "lim": limit_nodes},
+        params,
     )
     nodes = [
         {

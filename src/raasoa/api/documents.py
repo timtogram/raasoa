@@ -14,6 +14,7 @@ from raasoa.schemas.document import (
     DocumentWithChunks,
     PaginatedDocuments,
 )
+from raasoa.security.principal import acl_predicate_sql, resolve_principal_ids
 
 router = APIRouter(prefix="/v1", tags=["documents"])
 
@@ -43,6 +44,7 @@ async def find_by_metadata(
     can pick the right one without a second round trip.
     """
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
     metadata: dict[str, Any] = payload.get("metadata") or {}
     limit = int(payload.get("limit") or 20)
     limit = max(1, min(limit, 200))
@@ -50,21 +52,29 @@ async def find_by_metadata(
     # Both the JSONB key and value are bound as parameters (never spliced
     # into the SQL text) — an f-string key was a SQL injection vector, see
     # hybrid_search.py's metadata_filter handling for the same fix.
-    where: list[str] = ["tenant_id = :tid", "status != 'deleted'"]
+    where: list[str] = ["d.tenant_id = :tid", "d.status != 'deleted'"]
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit}
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
     for i, (k, v) in enumerate(metadata.items()):
         key_pname = f"mk{i}"
         val_pname = f"mv{i}"
-        where.append(f"doc_metadata ->> :{key_pname} = :{val_pname}")
+        where.append(f"d.doc_metadata ->> :{key_pname} = :{val_pname}")
         params[key_pname] = k
         params[val_pname] = str(v)
 
+    acl_filter = (
+        acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
+        if principal_ids is not None else ""
+    )
     sql = text(
-        "SELECT id, title, doc_type, status, review_status, "
-        "       quality_score, doc_metadata, created_at "
-        "FROM documents "
-        f"WHERE {' AND '.join(where)} "
-        "ORDER BY created_at DESC LIMIT :lim"
+        "SELECT d.id, d.title, d.doc_type, d.status, d.review_status, "
+        "       d.quality_score, d.doc_metadata, d.created_at "
+        "FROM documents d "
+        "JOIN sources s ON s.id = d.source_id "
+        f"WHERE {' AND '.join(where)}"
+        f"{acl_filter} "
+        "ORDER BY d.created_at DESC LIMIT :lim"
     )
     result = await session.execute(sql, params)
     docs = [
@@ -95,7 +105,14 @@ async def list_documents(
 ) -> PaginatedDocuments:
     """List documents with cursor-based pagination."""
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit + 1}
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+    acl_filter = (
+        acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
+        if principal_ids is not None else ""
+    )
 
     if cursor:
         try:
@@ -107,25 +124,31 @@ async def list_documents(
             ) from err
 
         sql = text(
-            "SELECT id, title, source_object_id, doc_type, status, "
-            "chunk_count, version, index_tier, quality_score, "
-            "last_synced_at, last_embedded_at, created_at "
-            "FROM documents WHERE tenant_id = :tid "
-            "AND status != 'deleted' "
-            "AND (created_at, id) < "
-            "  (CAST(:cursor_ts AS timestamptz), :cursor_id) "
-            "ORDER BY created_at DESC, id DESC LIMIT :lim"
+            "SELECT d.id, d.title, d.source_object_id, d.doc_type, d.status, "
+            "d.chunk_count, d.version, d.index_tier, d.quality_score, "
+            "d.last_synced_at, d.last_embedded_at, d.created_at "
+            "FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.tenant_id = :tid "
+            "AND d.status != 'deleted' "
+            "AND (d.created_at, d.id) < "
+            "  (CAST(:cursor_ts AS timestamptz), :cursor_id)"
+            f"{acl_filter} "
+            "ORDER BY d.created_at DESC, d.id DESC LIMIT :lim"
         )
         params["cursor_ts"] = cursor_ts
         params["cursor_id"] = cursor_uuid
     else:
         sql = text(
-            "SELECT id, title, source_object_id, doc_type, status, "
-            "chunk_count, version, index_tier, quality_score, "
-            "last_synced_at, last_embedded_at, created_at "
-            "FROM documents WHERE tenant_id = :tid "
-            "AND status != 'deleted' "
-            "ORDER BY created_at DESC, id DESC LIMIT :lim"
+            "SELECT d.id, d.title, d.source_object_id, d.doc_type, d.status, "
+            "d.chunk_count, d.version, d.index_tier, d.quality_score, "
+            "d.last_synced_at, d.last_embedded_at, d.created_at "
+            "FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.tenant_id = :tid "
+            "AND d.status != 'deleted'"
+            f"{acl_filter} "
+            "ORDER BY d.created_at DESC, d.id DESC LIMIT :lim"
         )
 
     result = await session.execute(sql, params)
@@ -165,19 +188,33 @@ async def get_document(
     document_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> DocumentWithChunks:
-    """Get document details with all chunks (tenant-scoped)."""
+    """Get document details with all chunks (tenant-scoped).
+
+    A restricted document the caller has no grant for returns 404, the
+    same as a nonexistent document — not 403 — so its existence isn't
+    leaked to a principal who shouldn't know about it.
+    """
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    params: dict[str, Any] = {"did": document_id, "tid": tenant_id}
+    acl_filter = ""
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+        acl_filter = acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
 
     result = await session.execute(
         text(
-            "SELECT id, title, source_object_id, doc_type, status, "
-            "chunk_count, version, index_tier, quality_score, "
-            "last_synced_at, last_embedded_at, created_at, "
-            "embedding_model, review_status, conflict_status, "
-            "access_count "
-            "FROM documents WHERE id = :did AND tenant_id = :tid"
+            "SELECT d.id, d.title, d.source_object_id, d.doc_type, d.status, "
+            "d.chunk_count, d.version, d.index_tier, d.quality_score, "
+            "d.last_synced_at, d.last_embedded_at, d.created_at, "
+            "d.embedding_model, d.review_status, d.conflict_status, "
+            "d.access_count "
+            "FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.id = :did AND d.tenant_id = :tid"
+            f"{acl_filter}"
         ),
-        {"did": document_id, "tid": tenant_id},
+        params,
     )
     doc = result.first()
     if not doc:
