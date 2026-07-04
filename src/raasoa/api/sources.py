@@ -1283,6 +1283,29 @@ async def _sync_hubspot(
                                 },
                             )
 
+                        owner_principal_id = (
+                            f"hubspot:owner:{owner_id}" if owner_id else None
+                        )
+                        await session.execute(
+                            text(
+                                "INSERT INTO crm_objects "
+                                "(id, tenant_id, source_id, document_id, object_type, "
+                                " external_id, owner_principal_id, properties, updated_at) "
+                                "VALUES (:id, :tid, :sid, :did, :otype, :extid, :owner, "
+                                " CAST(:props AS jsonb), now()) "
+                                "ON CONFLICT (tenant_id, source_id, object_type, external_id) "
+                                "DO UPDATE SET document_id = :did, "
+                                "  owner_principal_id = :owner, "
+                                "  properties = CAST(:props AS jsonb), updated_at = now()"
+                            ),
+                            {
+                                "id": uuid.uuid4(), "tid": tenant_id, "sid": source_id,
+                                "did": doc.id, "otype": object_type, "extid": record_id,
+                                "owner": owner_principal_id,
+                                "props": json.dumps(properties),
+                            },
+                        )
+
                         stats["synced"] += 1
                         per_type_synced += 1
                         logger.info(

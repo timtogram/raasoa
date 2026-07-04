@@ -227,6 +227,26 @@ async def test_hubspot_sync_ingests_deals_with_owner_acl(
             )
             assert no_acl_result.first() is None
 
+            # Each record is also upserted into crm_objects for the
+            # structured query path (Task #15), with the same owner
+            # attribution as the document-level ACL grant above.
+            crm_result = await session.execute(
+                sql_text(
+                    "SELECT external_id, owner_principal_id, properties, document_id "
+                    "FROM crm_objects WHERE tenant_id = :tid AND source_id = :sid "
+                    "ORDER BY external_id"
+                ),
+                {"tid": tenant_id, "sid": source_id},
+            )
+            crm_rows = crm_result.fetchall()
+            assert len(crm_rows) == 2
+            assert crm_rows[0].external_id == "1001"
+            assert crm_rows[0].owner_principal_id == "hubspot:owner:42"
+            assert crm_rows[0].properties["dealname"] == "Acme Renewal"
+            assert crm_rows[0].document_id == acme.id
+            assert crm_rows[1].external_id == "1002"
+            assert crm_rows[1].owner_principal_id is None
+
             # Delta cursor recorded for the next sync.
             cursor_result = await session.execute(
                 sql_text(
@@ -239,6 +259,9 @@ async def test_hubspot_sync_ingests_deals_with_owner_acl(
             assert cursor_row is not None
             assert "deals" in cursor_row.delta_token
         finally:
+            await session.execute(
+                sql_text("DELETE FROM crm_objects WHERE source_id = :sid"), {"sid": source_id},
+            )
             await session.execute(
                 sql_text(
                     "DELETE FROM acl_entries WHERE document_id IN "

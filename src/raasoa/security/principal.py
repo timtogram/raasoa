@@ -202,6 +202,36 @@ def acl_predicate_sql(
     )
 
 
+def crm_acl_predicate_sql(
+    *, crm_alias: str = "co", source_alias: str = "s",
+    principal_ids_param: str = "principal_ids", tenant_id_param: str = "tenant_id",
+) -> str:
+    """ACL predicate for ``crm_objects`` rows — parallel to
+    ``acl_predicate_sql`` but keyed on ``owner_principal_id`` instead of a
+    per-document ``acl_entries`` row, since ``crm_objects`` has no such
+    table (see the migration's docstring for why: CRM records are
+    per-owner sensitive by construction, so the owner check is a plain
+    column comparison rather than a correlated EXISTS).
+
+    Same calling convention as ``acl_predicate_sql``: only skip this
+    fragment when ``principal_ids is None`` (legacy/tenant-wide caller);
+    an empty list must still apply the predicate and correctly match
+    nothing.
+    """
+    return (
+        f" AND ("
+        f"   {source_alias}.default_visibility != 'restricted'"
+        f"   OR {crm_alias}.owner_principal_id = ANY(:{principal_ids_param})"
+        f"   OR EXISTS ("
+        f"     SELECT 1 FROM source_acl_grants g"
+        f"     WHERE g.source_id = {crm_alias}.source_id"
+        f"     AND g.tenant_id = :{tenant_id_param}"
+        f"     AND g.principal_id = ANY(:{principal_ids_param})"
+        f"   )"
+        f" )"
+    )
+
+
 def clamp_principal_override(
     principal: Principal, requested_principal_id: str | None, resolved_ids: list[str] | None,
 ) -> str | None:

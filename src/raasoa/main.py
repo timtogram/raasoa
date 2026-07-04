@@ -9,6 +9,7 @@ from raasoa.api.acl import router as acl_router
 from raasoa.api.admin import router as admin_router
 from raasoa.api.analytics import router as analytics_router
 from raasoa.api.claim_clusters import router as claim_clusters_router
+from raasoa.api.crm import router as crm_router
 from raasoa.api.dependencies import router as dependencies_router
 from raasoa.api.documents import router as documents_router
 from raasoa.api.health import router as health_router
@@ -71,6 +72,7 @@ app.include_router(source_tree_router)
 app.include_router(webhooks_router)
 app.include_router(versioning_router)
 app.include_router(dependencies_router)
+app.include_router(crm_router)
 if settings.mcp_http_enabled:
     from raasoa.mcp.http_transport import router as mcp_http_router
 

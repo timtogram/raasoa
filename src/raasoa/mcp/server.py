@@ -433,6 +433,57 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "required": ["name"],
             },
         },
+        {
+            "name": "raasoa_crm_query",
+            "description": (
+                "Filter CRM records (deals, contacts, companies, tickets) "
+                "by typed property comparisons — e.g. 'deals in stage "
+                "closedwon with amount >= 10000'. Prefer this over "
+                "raasoa_search/raasoa_answer whenever the question is a "
+                "structured filter over CRM data rather than a semantic "
+                "lookup: it queries typed CRM records directly through a "
+                "whitelisted filter DSL, not free-text SQL, so exact "
+                "numeric/categorical filters are reliable."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "object_type": {
+                        "type": "string",
+                        "enum": ["deals", "contacts", "companies", "tickets"],
+                    },
+                    "filters": {
+                        "type": "array",
+                        "description": (
+                            "List of {field, op, value}. op is one of: "
+                            "eq, ne, gt, gte, lt, lte, in, contains, is_null."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "field": {"type": "string"},
+                                "op": {"type": "string"},
+                                "value": {},
+                            },
+                            "required": ["field", "op"],
+                        },
+                    },
+                    "sort": {
+                        "type": "object",
+                        "properties": {
+                            "field": {"type": "string"},
+                            "direction": {"type": "string", "enum": ["asc", "desc"]},
+                        },
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max records to return (1-200, default 50).",
+                        "default": 50,
+                    },
+                },
+                "required": ["object_type"],
+            },
+        },
     ]
 
 
@@ -1080,6 +1131,37 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                 "type": "text",
                 "text": header + "\n" + full_text + other,
             }]
+
+        elif name == "raasoa_crm_query":
+            crm_body: dict[str, Any] = {"object_type": arguments["object_type"]}
+            if "filters" in arguments:
+                crm_body["filters"] = arguments["filters"]
+            if "sort" in arguments:
+                crm_body["sort"] = arguments["sort"]
+            if "limit" in arguments:
+                crm_body["limit"] = arguments["limit"]
+            resp = await client.post(
+                f"{BASE_URL}/v1/crm/query",
+                json=crm_body,
+                headers=_headers(),
+            )
+            if resp.status_code in (400, 422):
+                detail = resp.json().get("detail", resp.text)
+                return [{"type": "text", "text": f"Invalid CRM query: {detail}"}]
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results", [])
+            if not results:
+                return [{"type": "text", "text": f"No {crm_body['object_type']} matched."}]
+            lines = [f"{data.get('count', len(results))} {crm_body['object_type']} matched:\n"]
+            for r in results[:20]:
+                props = r.get("properties") or {}
+                summary = ", ".join(
+                    f"{k}={v}" for k, v in list(props.items())[:5]
+                    if v not in (None, "")
+                )
+                lines.append(f"  [{r['external_id']}] {summary}")
+            return [{"type": "text", "text": "\n".join(lines)}]
 
         else:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
