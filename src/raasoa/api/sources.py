@@ -28,7 +28,7 @@ router = APIRouter(prefix="/v1/sources", tags=["sources"])
 
 class SourceCreate(BaseModel):
     source_type: str = Field(
-        ..., description="Type: notion, sharepoint, jira, confluence, webhook, custom",
+        ..., description="Type: notion, sharepoint, jira, hubspot, confluence, webhook, custom",
     )
     name: str = Field(..., description="Display name for this source")
     config: dict[str, Any] = Field(
@@ -39,6 +39,42 @@ class SourceCreate(BaseModel):
         default=None,
         description="Auto-sync interval in minutes. None = manual only.",
     )
+    auto_index: bool = Field(
+        default=True,
+        description=(
+            "Immediately run a sync after connecting, so data-quality "
+            "problems (low scores, contradictions) surface right away "
+            "instead of waiting for the next scheduled sync."
+        ),
+    )
+    sync_query: str = Field(
+        default="*", description="Search/filter query for the initial sync.",
+    )
+    sync_limit: int = Field(
+        default=50, ge=1, le=500,
+        description="Max records to pull in the initial sync.",
+    )
+
+
+class ConflictSummary(BaseModel):
+    conflict_type: str
+    confidence: float | None
+    document_a_title: str | None
+    document_b_title: str | None
+
+
+class IndexingReport(BaseModel):
+    """Immediate data-quality snapshot after connecting a source."""
+
+    sync_status: str
+    documents_synced: int
+    documents_skipped: int
+    sync_errors: list[dict[str, Any]]
+    avg_quality_score: float | None
+    critical_findings: int
+    warning_findings: int
+    new_conflicts: int
+    top_conflicts: list[ConflictSummary]
 
 
 class SourceResponse(BaseModel):
@@ -49,6 +85,7 @@ class SourceResponse(BaseModel):
     document_count: int
     last_sync: str | None
     sync_status: str
+    indexing_report: IndexingReport | None = None
 
 
 class SyncRequest(BaseModel):
@@ -58,13 +95,105 @@ class SyncRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=500)
 
 
+async def _build_indexing_report(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    source_id: uuid.UUID,
+    sync_status: str,
+    sync_stats: dict[str, Any],
+) -> IndexingReport:
+    """Summarize data quality for the documents just synced from a source.
+
+    This is what turns "connect a source" into an immediate signal: the
+    admin sees average quality, how many findings are serious, and whether
+    any of the freshly-ingested documents already contradict something —
+    without waiting for a separate report or dashboard visit.
+    """
+    quality_result = await session.execute(
+        text(
+            "SELECT ROUND(AVG(quality_score)::numeric, 3) AS avg_score, "
+            "COUNT(*) AS total "
+            "FROM documents WHERE tenant_id = :tid AND source_id = :sid "
+            "AND status != 'deleted' AND quality_score IS NOT NULL"
+        ),
+        {"tid": tenant_id, "sid": source_id},
+    )
+    q_row = quality_result.first()
+    avg_score = float(q_row.avg_score) if q_row and q_row.avg_score is not None else None
+
+    findings_result = await session.execute(
+        text(
+            "SELECT qf.severity, COUNT(*) AS cnt FROM quality_findings qf "
+            "JOIN documents d ON d.id = qf.document_id "
+            "WHERE d.tenant_id = :tid AND d.source_id = :sid "
+            "GROUP BY qf.severity"
+        ),
+        {"tid": tenant_id, "sid": source_id},
+    )
+    severity_counts = {r.severity: r.cnt for r in findings_result.fetchall()}
+
+    conflicts_result = await session.execute(
+        text(
+            "SELECT cc.conflict_type, cc.confidence, "
+            "  da.title AS title_a, db.title AS title_b "
+            "FROM conflict_candidates cc "
+            "JOIN documents da ON da.id = cc.document_a_id "
+            "JOIN documents db ON db.id = cc.document_b_id "
+            "WHERE cc.tenant_id = :tid "
+            "AND (da.source_id = :sid OR db.source_id = :sid) "
+            "AND cc.status = 'new' "
+            "ORDER BY cc.confidence DESC NULLS LAST LIMIT 3"
+        ),
+        {"tid": tenant_id, "sid": source_id},
+    )
+    top_conflicts = [
+        ConflictSummary(
+            conflict_type=r.conflict_type,
+            confidence=float(r.confidence) if r.confidence is not None else None,
+            document_a_title=r.title_a,
+            document_b_title=r.title_b,
+        )
+        for r in conflicts_result.fetchall()
+    ]
+
+    conflict_count_result = await session.execute(
+        text(
+            "SELECT COUNT(*) FROM conflict_candidates cc "
+            "JOIN documents da ON da.id = cc.document_a_id "
+            "JOIN documents db ON db.id = cc.document_b_id "
+            "WHERE cc.tenant_id = :tid "
+            "AND (da.source_id = :sid OR db.source_id = :sid) "
+            "AND cc.status = 'new'"
+        ),
+        {"tid": tenant_id, "sid": source_id},
+    )
+    new_conflicts = conflict_count_result.scalar() or 0
+
+    return IndexingReport(
+        sync_status=sync_status,
+        documents_synced=sync_stats.get("synced", 0),
+        documents_skipped=sync_stats.get("skipped", 0),
+        sync_errors=sync_stats.get("errors", []),
+        avg_quality_score=avg_score,
+        critical_findings=severity_counts.get("critical", 0),
+        warning_findings=severity_counts.get("warning", 0),
+        new_conflicts=new_conflicts,
+        top_conflicts=top_conflicts,
+    )
+
+
 @router.post("", response_model=SourceResponse)
 async def create_source(
     request: Request,
     body: SourceCreate,
     session: AsyncSession = Depends(get_session),
 ) -> SourceResponse:
-    """Create a new data source connection."""
+    """Create a new data source connection.
+
+    By default (auto_index=True) also runs an immediate sync and returns
+    a data-quality snapshot — connecting a source and seeing "12 documents
+    indexed, 2 already contradict each other" happens in one call.
+    """
     tenant_id = await resolve_tenant_async(request)
 
     # Quota check: source limit
@@ -96,14 +225,71 @@ async def create_source(
     )
     await session.commit()
 
+    if not body.auto_index:
+        return SourceResponse(
+            id=str(source_id),
+            source_type=body.source_type,
+            name=body.name,
+            config_keys=list(body.config.keys()),
+            document_count=0,
+            last_sync=None,
+            sync_status="idle",
+        )
+
+    try:
+        stats = await _dispatch_sync(
+            body.source_type, session, tenant_id, source_id,
+            body.config, body.sync_query, body.sync_limit,
+        )
+    except Exception as e:
+        logger.exception("Auto-index failed for new source %s", source_id)
+        stats = {"status": "error", "message": str(e)[:300], "synced": 0}
+
+    has_results = stats.get("synced", 0) > 0
+    is_unsupported = stats.get("status") == "unsupported"
+    is_error = stats.get("status") == "error"
+    sync_status = "error" if is_error else (
+        "completed" if has_results or is_unsupported else "empty"
+    )
+    await session.execute(
+        text(
+            "INSERT INTO sync_cursors (source_type, source_id, sync_status, items_synced) "
+            "VALUES (:stype, :sid, :status, :count) "
+            "ON CONFLICT (source_type, source_id) "
+            "DO UPDATE SET sync_status = :status, items_synced = :count, "
+            "last_sync_at = now()"
+        ),
+        {
+            "stype": body.source_type,
+            "sid": source_id,
+            "status": sync_status,
+            "count": stats.get("synced", 0),
+        },
+    )
+    await session.commit()
+
+    doc_count_result = await session.execute(
+        text(
+            "SELECT COUNT(*) FROM documents "
+            "WHERE tenant_id = :tid AND source_id = :sid AND status != 'deleted'"
+        ),
+        {"tid": tenant_id, "sid": source_id},
+    )
+    doc_count = doc_count_result.scalar() or 0
+
+    report = await _build_indexing_report(
+        session, tenant_id, source_id, sync_status, stats,
+    )
+
     return SourceResponse(
         id=str(source_id),
         source_type=body.source_type,
         name=body.name,
         config_keys=list(body.config.keys()),
-        document_count=0,
-        last_sync=None,
-        sync_status="idle",
+        document_count=doc_count,
+        last_sync="now" if has_results else None,
+        sync_status=sync_status,
+        indexing_report=report,
     )
 
 
@@ -166,6 +352,35 @@ async def delete_source(
     return {"status": "deleted", "id": str(source_id)}
 
 
+async def _dispatch_sync(
+    source_type: str,
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    source_id: uuid.UUID,
+    config: dict[str, Any],
+    query: str,
+    limit: int,
+) -> dict[str, Any]:
+    """Route to the connector-specific sync implementation.
+
+    Shared by the explicit POST /sources/{id}/sync endpoint and the
+    auto-index-on-connect flow in create_source, so both paths behave
+    identically.
+    """
+    if source_type == "notion":
+        return await _sync_notion(session, tenant_id, source_id, config, query, limit)
+    if source_type == "sharepoint":
+        return await _sync_sharepoint(session, tenant_id, source_id, config, query, limit)
+    if source_type == "jira":
+        return await _sync_jira(session, tenant_id, source_id, config, query, limit)
+    if source_type == "hubspot":
+        return await _sync_hubspot(session, tenant_id, source_id, config, query, limit)
+    return {
+        "status": "unsupported",
+        "message": f"Auto-sync not available for {source_type}. Use webhooks.",
+    }
+
+
 @router.post("/{source_id}/sync")
 async def sync_source(
     request: Request,
@@ -206,26 +421,10 @@ async def sync_source(
     await session.commit()
 
     try:
-        if source.source_type == "notion":
-            stats = await _sync_notion(
-                session, tenant_id, source_id, config,
-                body.query, body.limit,
-            )
-        elif source.source_type == "sharepoint":
-            stats = await _sync_sharepoint(
-                session, tenant_id, source_id, config,
-                body.query, body.limit,
-            )
-        elif source.source_type == "jira":
-            stats = await _sync_jira(
-                session, tenant_id, source_id, config,
-                body.query, body.limit,
-            )
-        else:
-            stats = {
-                "status": "unsupported",
-                "message": f"Auto-sync not available for {source.source_type}. Use webhooks.",
-            }
+        stats = await _dispatch_sync(
+            source.source_type, session, tenant_id, source_id, config,
+            body.query, body.limit,
+        )
 
         # Update sync status
         has_results = stats.get("synced", 0) > 0
@@ -740,6 +939,300 @@ async def _sync_jira(
             next_page_token = data.get("nextPageToken")
             if not next_page_token:
                 break
+
+    return stats
+
+
+HUBSPOT_DEFAULT_PROPERTIES: dict[str, list[str]] = {
+    "deals": [
+        "dealname", "amount", "dealstage", "pipeline", "closedate",
+        "hubspot_owner_id", "createdate", "hs_lastmodifieddate",
+        "dealtype", "description",
+    ],
+    "contacts": [
+        "firstname", "lastname", "email", "jobtitle", "company",
+        "phone", "lifecyclestage", "hubspot_owner_id",
+        "createdate", "hs_lastmodifieddate",
+    ],
+    "companies": [
+        "name", "domain", "industry", "city", "country",
+        "numberofemployees", "hubspot_owner_id",
+        "createdate", "hs_lastmodifieddate",
+    ],
+    "tickets": [
+        "subject", "content", "hs_pipeline", "hs_pipeline_stage",
+        "hs_ticket_priority", "hubspot_owner_id",
+        "createdate", "hs_lastmodifieddate",
+    ],
+}
+
+HUBSPOT_TITLE_PROPERTY: dict[str, str] = {
+    "deals": "dealname",
+    "contacts": "email",
+    "companies": "name",
+    "tickets": "subject",
+}
+
+
+def _hubspot_record_title(object_type: str, properties: dict[str, Any]) -> str:
+    prop = HUBSPOT_TITLE_PROPERTY.get(object_type, "name")
+    title = properties.get(prop)
+    if title:
+        return str(title)
+    if object_type == "contacts":
+        name = " ".join(
+            p for p in (properties.get("firstname"), properties.get("lastname")) if p
+        )
+        if name:
+            return name
+    singular = object_type[:-1] if object_type.endswith("s") else object_type
+    return f"{singular} {properties.get('hs_object_id', '?')}"
+
+
+def _hubspot_record_to_markdown(
+    object_type: str, record_id: str, properties: dict[str, Any],
+) -> str:
+    title = _hubspot_record_title(object_type, properties)
+    singular = object_type[:-1] if object_type.endswith("s") else object_type
+    lines = [f"# {title}", "", f"HubSpot object type: {singular}"]
+    for key, value in properties.items():
+        if value in (None, ""):
+            continue
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+async def _sync_hubspot(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    source_id: uuid.UUID,
+    config: dict[str, Any],
+    query: str,
+    limit: int,
+) -> dict[str, Any]:
+    """Sync HubSpot CRM objects (deals, contacts, companies, tickets).
+
+    Config requires:
+    - token: HubSpot private-app access token (Bearer)
+    - objects: optional list, subset of ["deals","contacts","companies","tickets"].
+      Defaults to all four.
+    - properties: optional dict[object_type -> list[str]] to override the
+      default property set fetched per object type.
+
+    Each record is ingested as a document (so RAG/hybrid search can find it),
+    with its raw CRM properties preserved in doc_metadata for structured
+    filtering. Delta-synced via hs_lastmodifieddate. Each record's
+    hubspot_owner_id (if present) becomes an ACL grant — HubSpot CRM data is
+    per-owner sensitive by nature, so access is inherited from the source's
+    own ownership model rather than left open by default.
+    """
+    import httpx
+
+    token = config.get("token", "")
+    if not token:
+        return {
+            "status": "error",
+            "message": "No HubSpot token configured. Set config.token to a "
+            "private-app access token.",
+        }
+
+    object_types = config.get("objects") or list(HUBSPOT_DEFAULT_PROPERTIES.keys())
+    object_types = [o for o in object_types if o in HUBSPOT_DEFAULT_PROPERTIES]
+    if not object_types:
+        return {
+            "status": "error",
+            "message": (
+                "No valid HubSpot object types configured. "
+                f"Choose from: {list(HUBSPOT_DEFAULT_PROPERTIES.keys())}"
+            ),
+        }
+
+    from raasoa.ingestion.pipeline import ingest_file
+    from raasoa.providers.factory import get_embedding_provider
+
+    stats: dict[str, Any] = {
+        "found": 0, "synced": 0, "skipped": 0,
+        "unchanged": 0, "errors": [], "by_object_type": {},
+    }
+    provider = get_embedding_provider()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    # Per-object-type delta cursor, stored as JSON in the shared delta_token column
+    cursor_result = await session.execute(
+        text(
+            "SELECT delta_token FROM sync_cursors "
+            "WHERE source_id = :sid AND source_type = 'hubspot'"
+        ),
+        {"sid": source_id},
+    )
+    cursor_row = cursor_result.first()
+    cursors: dict[str, str] = {}
+    if cursor_row and cursor_row.delta_token:
+        try:
+            parsed = json.loads(cursor_row.delta_token)
+            if isinstance(parsed, dict):
+                cursors = {str(k): str(v) for k, v in parsed.items()}
+        except json.JSONDecodeError:
+            pass
+
+    new_cursors: dict[str, str] = dict(cursors)
+
+    async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
+        for object_type in object_types:
+            per_type_synced = 0
+            props = (config.get("properties") or {}).get(
+                object_type, HUBSPOT_DEFAULT_PROPERTIES[object_type],
+            )
+            last_sync = cursors.get(object_type)
+            search_body: dict[str, Any] = {
+                "limit": min(100, limit),
+                "properties": props,
+                "sorts": [{"propertyName": "hs_lastmodifieddate", "direction": "DESCENDING"}],
+            }
+            if query and query != "*":
+                search_body["query"] = query
+            if last_sync:
+                search_body["filterGroups"] = [{
+                    "filters": [{
+                        "propertyName": "hs_lastmodifieddate",
+                        "operator": "GT",
+                        "value": last_sync,
+                    }],
+                }]
+
+            after: str | None = None
+            newest_seen = last_sync
+
+            while per_type_synced < limit:
+                body = dict(search_body)
+                if after:
+                    body["after"] = after
+
+                resp = await client.post(
+                    f"https://api.hubapi.com/crm/v3/objects/{object_type}/search",
+                    json=body,
+                )
+                if resp.status_code != 200:
+                    stats["errors"].append({
+                        "object_type": object_type,
+                        "error": f"HubSpot API {resp.status_code}: {resp.text[:200]}",
+                    })
+                    break
+
+                data = resp.json()
+                results = data.get("results", [])
+                stats["found"] += len(results)
+                if not results:
+                    break
+
+                for record in results:
+                    record_id = record.get("id", "")
+                    properties = record.get("properties") or {}
+                    modified = properties.get("hs_lastmodifieddate")
+                    if modified and (newest_seen is None or modified > newest_seen):
+                        newest_seen = modified
+
+                    content = _hubspot_record_to_markdown(object_type, record_id, properties)
+                    if len(content.strip()) < 20:
+                        stats["skipped"] += 1
+                        continue
+
+                    title = _hubspot_record_title(object_type, properties)
+                    owner_id = properties.get("hubspot_owner_id")
+                    ingest_meta = {
+                        **properties,
+                        "connector": "hubspot",
+                        "crm_object_type": object_type,
+                        "crm_object_id": record_id,
+                        "hubspot_owner_id": owner_id,
+                        "folder_path": f"HubSpot/{object_type}",
+                    }
+                    try:
+                        doc, _assessment = await ingest_file(
+                            session=session,
+                            tenant_id=tenant_id,
+                            source_id=source_id,
+                            file_data=content.encode("utf-8"),
+                            filename=f"hubspot-{object_type}-{record_id}.md",
+                            embedding_provider=provider,
+                            source_object_id=f"hubspot:{object_type}:{record_id}",
+                            source_url=(
+                                f"https://app.hubspot.com/contacts/{object_type}/{record_id}"
+                            ),
+                            source_metadata=ingest_meta,
+                            last_modified=_parse_datetime(modified),
+                        )
+                        await session.refresh(doc)
+
+                        # Owner-based ACL grant: CRM records are sensitive by
+                        # default (see default_visibility on the source);
+                        # each record grants read access to its own owner.
+                        if owner_id:
+                            await session.execute(
+                                text(
+                                    "DELETE FROM acl_entries "
+                                    "WHERE document_id = :did AND source_acl_id = :said"
+                                ),
+                                {"did": doc.id, "said": f"hubspot_owner:{owner_id}"},
+                            )
+                            await session.execute(
+                                text(
+                                    "INSERT INTO acl_entries "
+                                    "(id, document_id, principal_type, principal_id, "
+                                    " permission, source_acl_id) "
+                                    "VALUES (:id, :did, 'user', :pid, 'read', :said)"
+                                ),
+                                {
+                                    "id": uuid.uuid4(),
+                                    "did": doc.id,
+                                    "pid": f"hubspot:owner:{owner_id}",
+                                    "said": f"hubspot_owner:{owner_id}",
+                                },
+                            )
+
+                        stats["synced"] += 1
+                        per_type_synced += 1
+                        logger.info(
+                            "Synced HubSpot %s: %s (%d chunks)",
+                            object_type, title, doc.chunk_count,
+                        )
+                    except Exception as e:
+                        stats["errors"].append({
+                            "record": f"{object_type}:{record_id}",
+                            "error": str(e)[:200],
+                        })
+
+                stats["by_object_type"][object_type] = per_type_synced
+                after = (data.get("paging") or {}).get("next", {}).get("after")
+                if not after or per_type_synced >= limit:
+                    break
+
+            if newest_seen:
+                new_cursors[object_type] = newest_seen
+
+    if stats["synced"] > 0 or new_cursors != cursors:
+        await session.execute(
+            text(
+                "INSERT INTO sync_cursors "
+                "(source_type, source_id, delta_token, "
+                " last_sync_at, sync_status, items_synced) "
+                "VALUES ('hubspot', :sid, :token, now(), 'completed', :count) "
+                "ON CONFLICT (source_type, source_id) "
+                "DO UPDATE SET delta_token = :token, "
+                "  last_sync_at = now(), "
+                "  sync_status = 'completed', "
+                "  items_synced = :count"
+            ),
+            {
+                "sid": source_id,
+                "token": json.dumps(new_cursors),
+                "count": stats["synced"],
+            },
+        )
+    await session.commit()
 
     return stats
 

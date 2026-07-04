@@ -2,6 +2,8 @@
 
 from raasoa.api.sources import (
     _adf_to_text,
+    _hubspot_record_title,
+    _hubspot_record_to_markdown,
     _jira_issue_metadata,
     _jira_issue_to_markdown,
     _notion_blocks_to_text,
@@ -94,3 +96,38 @@ def test_notion_blocks_to_text_preserves_common_blocks() -> None:
     assert "## Plan" in text
     assert "- Ship it" in text
     assert "[x] Verified" in text
+
+
+def test_hubspot_record_title_prefers_named_property() -> None:
+    assert _hubspot_record_title("deals", {"dealname": "Acme Renewal"}) == "Acme Renewal"
+    assert _hubspot_record_title("companies", {"name": "Acme Corp"}) == "Acme Corp"
+
+
+def test_hubspot_record_title_falls_back_to_contact_name() -> None:
+    title = _hubspot_record_title(
+        "contacts", {"firstname": "Ada", "lastname": "Lovelace"},
+    )
+    assert title == "Ada Lovelace"
+
+
+def test_hubspot_record_title_falls_back_to_object_id() -> None:
+    title = _hubspot_record_title("deals", {"hs_object_id": "42"})
+    assert title == "deal 42"
+
+
+def test_hubspot_record_to_markdown_includes_properties() -> None:
+    md = _hubspot_record_to_markdown(
+        "deals",
+        "123",
+        {
+            "dealname": "Acme Renewal",
+            "amount": "50000",
+            "dealstage": "closedwon",
+            "hubspot_owner_id": None,  # should be skipped, not rendered as "None"
+        },
+    )
+    assert "# Acme Renewal" in md
+    assert "HubSpot object type: deal" in md
+    assert "amount: 50000" in md
+    assert "dealstage: closedwon" in md
+    assert "hubspot_owner_id" not in md
