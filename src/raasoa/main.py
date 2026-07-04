@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from raasoa.api.acl import router as acl_router
+from raasoa.api.admin import router as admin_router
 from raasoa.api.analytics import router as analytics_router
 from raasoa.api.claim_clusters import router as claim_clusters_router
 from raasoa.api.dependencies import router as dependencies_router
@@ -59,6 +60,7 @@ app.include_router(retrieval_router)
 app.include_router(documents_router)
 app.include_router(quality_router)
 app.include_router(acl_router)
+app.include_router(admin_router)
 app.include_router(analytics_router)
 app.include_router(synthesis_router)
 app.include_router(sources_router)

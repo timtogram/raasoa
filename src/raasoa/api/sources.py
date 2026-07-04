@@ -54,6 +54,15 @@ class SourceCreate(BaseModel):
         default=50, ge=1, le=500,
         description="Max records to pull in the initial sync.",
     )
+    default_visibility: str | None = Field(
+        default=None,
+        description=(
+            "'inherit' (open unless a document has its own ACL) or "
+            "'restricted' (invisible without an explicit grant). Defaults "
+            "to 'restricted' for hubspot — CRM records are owner-sensitive "
+            "by nature — and 'inherit' for every other source type."
+        ),
+    )
 
 
 class ConflictSummary(BaseModel):
@@ -85,7 +94,21 @@ class SourceResponse(BaseModel):
     document_count: int
     last_sync: str | None
     sync_status: str
+    default_visibility: str = "inherit"
     indexing_report: IndexingReport | None = None
+
+
+class SourceVisibilityUpdate(BaseModel):
+    default_visibility: str = Field(
+        ..., description="'inherit' (open by default) or 'restricted'",
+    )
+    grant_principal_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Principals to grant whole-source read access to in the same "
+            "call (inserted into source_acl_grants)."
+        ),
+    )
 
 
 class SyncRequest(BaseModel):
@@ -202,11 +225,23 @@ async def create_source(
     if not allowed:
         raise HTTPException(status_code=429, detail=reason)
 
+    if body.default_visibility is not None and body.default_visibility not in (
+        "inherit", "restricted",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="default_visibility must be 'inherit' or 'restricted'",
+        )
+    default_visibility = body.default_visibility or (
+        "restricted" if body.source_type == "hubspot" else "inherit"
+    )
+
     source_id = uuid.uuid4()
     await session.execute(
         text(
-            "INSERT INTO sources (id, tenant_id, source_type, name, connection_config) "
-            "VALUES (:id, :tid, :stype, :name, CAST(:config AS jsonb))"
+            "INSERT INTO sources "
+            "(id, tenant_id, source_type, name, connection_config, default_visibility) "
+            "VALUES (:id, :tid, :stype, :name, CAST(:config AS jsonb), :vis)"
         ),
         {
             "id": source_id,
@@ -221,6 +256,7 @@ async def create_source(
                     else {}
                 ),
             }),
+            "vis": default_visibility,
         },
     )
     await session.commit()
@@ -234,6 +270,7 @@ async def create_source(
             document_count=0,
             last_sync=None,
             sync_status="idle",
+            default_visibility=default_visibility,
         )
 
     try:
@@ -289,6 +326,7 @@ async def create_source(
         document_count=doc_count,
         last_sync="now" if has_results else None,
         sync_status=sync_status,
+        default_visibility=default_visibility,
         indexing_report=report,
     )
 
@@ -304,6 +342,7 @@ async def list_sources(
     result = await session.execute(
         text(
             "SELECT s.id, s.source_type, s.name, s.connection_config, "
+            "  s.default_visibility, "
             "  (SELECT COUNT(*) FROM documents d "
             "   WHERE d.source_id = s.id AND d.status != 'deleted') as doc_count, "
             "  sc.last_sync_at, sc.sync_status "
@@ -325,9 +364,60 @@ async def list_sources(
             document_count=r.doc_count,
             last_sync=str(r.last_sync_at) if r.last_sync_at else None,
             sync_status=r.sync_status or "idle",
+            default_visibility=r.default_visibility or "inherit",
         )
         for r in result.fetchall()
     ]
+
+
+@router.patch("/{source_id}/visibility")
+async def update_source_visibility(
+    request: Request,
+    source_id: uuid.UUID,
+    body: SourceVisibilityUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Admin-only: set a source's default visibility and optionally grant
+    whole-source read access to one or more principals in the same call."""
+    from raasoa.api.admin import require_admin
+
+    principal = await require_admin(request, session)
+    if body.default_visibility not in ("inherit", "restricted"):
+        raise HTTPException(
+            status_code=400,
+            detail="default_visibility must be 'inherit' or 'restricted'",
+        )
+
+    result = await session.execute(
+        text(
+            "UPDATE sources SET default_visibility = :vis "
+            "WHERE id = :sid AND tenant_id = :tid RETURNING id"
+        ),
+        {"vis": body.default_visibility, "sid": source_id, "tid": principal.tenant_id},
+    )
+    if not result.first():
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    for pid in body.grant_principal_ids:
+        await session.execute(
+            text(
+                "INSERT INTO source_acl_grants "
+                "(id, tenant_id, source_id, principal_id, permission) "
+                "VALUES (:id, :tid, :sid, :pid, 'read') "
+                "ON CONFLICT (tenant_id, source_id, principal_id) DO NOTHING"
+            ),
+            {
+                "id": uuid.uuid4(), "tid": principal.tenant_id,
+                "sid": source_id, "pid": pid,
+            },
+        )
+    await session.commit()
+    return {
+        "status": "updated",
+        "source_id": str(source_id),
+        "default_visibility": body.default_visibility,
+        "grants_added": body.grant_principal_ids,
+    }
 
 
 @router.delete("/{source_id}")
