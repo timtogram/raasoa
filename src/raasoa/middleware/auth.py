@@ -79,6 +79,55 @@ async def _resolve_key_from_db(api_key: str) -> uuid.UUID | None:
     return None
 
 
+async def _resolve_key_row_from_db(
+    api_key: str,
+) -> tuple[uuid.UUID, str | None, str, bool] | None:
+    """Look up an API key's full identity row.
+
+    Returns (tenant_id, principal_id, clearance, is_admin) or None. A NULL
+    principal_id means "legacy/tenant-wide key" — see
+    raasoa.security.principal.resolve_principal_async, which is the only
+    caller that should interpret that NULL specially. This is a separate
+    function from _resolve_key_from_db (used by resolve_tenant_async)
+    rather than a shared one, so the existing tenant-only resolution path
+    stays untouched.
+    """
+    try:
+        from raasoa.db import async_session
+
+        key_hash = _hash_key(api_key)
+
+        async with async_session() as session:
+            result = await session.execute(
+                text(
+                    "SELECT tenant_id, principal_id, clearance, is_admin "
+                    "FROM api_keys "
+                    "WHERE key_hash = :hash AND is_active = true "
+                    "AND (expires_at IS NULL OR expires_at > now())"
+                ),
+                {"hash": key_hash},
+            )
+            row = result.first()
+            if row:
+                await session.execute(
+                    text(
+                        "UPDATE api_keys SET last_used_at = now() "
+                        "WHERE key_hash = :hash"
+                    ),
+                    {"hash": key_hash},
+                )
+                await session.commit()
+                return (
+                    uuid.UUID(str(row.tenant_id)),
+                    row.principal_id,
+                    row.clearance,
+                    bool(row.is_admin),
+                )
+    except Exception:
+        pass  # DB lookup failed — fall through
+    return None
+
+
 def _extract_api_key(request: Request) -> str | None:
     """Extract API key from request headers."""
     auth_header = request.headers.get("authorization", "")

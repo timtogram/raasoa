@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.providers.base import EmbeddingProvider
+from raasoa.security.principal import acl_predicate_sql
 
 
 @dataclass
@@ -47,6 +48,7 @@ async def hybrid_search(
     lexical_weight: float = 1.0,
     rrf_k: int = 60,
     principal_id: str | None = None,
+    principal_ids: list[str] | None = None,
     source_type: str | None = None,
     doc_type: str | None = None,
     metadata_filter: dict[str, str] | None = None,
@@ -59,8 +61,19 @@ async def hybrid_search(
     Args:
         source_type: Filter to a specific source (e.g. "sharepoint", "jira")
         doc_type: Filter to a document type (e.g. "pdf", "policy")
-        principal_id: ACL filter — only docs accessible to this user
+        principal_id: Legacy single-principal ACL filter — kept for
+            backward compatibility with existing callers. Equivalent to
+            passing principal_ids=[principal_id].
+        principal_ids: The caller's resolved principal closure (self +
+            all transitive group memberships, see
+            raasoa.security.principal.expand_principal_ids). None means
+            "no ACL filtering" (today's behavior, unchanged) — this is
+            NOT the same as an empty list, which means "an authenticated
+            principal with zero grants" and correctly matches nothing.
     """
+    resolved_principal_ids: list[str] | None = principal_ids
+    if resolved_principal_ids is None and principal_id:
+        resolved_principal_ids = [principal_id]
     # Build dynamic filter clauses
     extra_filters = ""
     params: dict[str, Any] = {
@@ -102,17 +115,14 @@ async def hybrid_search(
             params[key_pname] = mkey
             params[val_pname] = mval
 
-    if principal_id:
-        extra_filters += (
-            " AND (NOT EXISTS ("
-            "   SELECT 1 FROM acl_entries a2 WHERE a2.document_id = d.id"
-            " ) OR EXISTS ("
-            "   SELECT 1 FROM acl_entries a WHERE a.document_id = d.id"
-            "   AND a.principal_id = :principal_id"
-            "   AND a.permission IN ('read', 'write', 'admin')"
-            " ))"
-        )
-        params["principal_id"] = principal_id
+    # ACL filter: None means "no filtering" (unauthenticated/legacy
+    # callers, unchanged from today); an empty list is a real, distinct
+    # case — an authenticated principal with zero grants — and must fail
+    # closed (match nothing), so this checks `is not None`, never a
+    # truthy check.
+    if resolved_principal_ids is not None:
+        extra_filters += acl_predicate_sql(doc_alias="d", source_alias="src")
+        params["principal_ids"] = resolved_principal_ids
 
     base_where = (
         "d.tenant_id = :tenant_id"
@@ -232,6 +242,7 @@ async def search(
     embedding_provider: EmbeddingProvider,
     top_k: int = 10,
     principal_id: str | None = None,
+    principal_ids: list[str] | None = None,
     source_type: str | None = None,
     doc_type: str | None = None,
     metadata_filter: dict[str, str] | None = None,
@@ -247,6 +258,7 @@ async def search(
         tenant_id=tenant_id,
         top_k=top_k,
         principal_id=principal_id,
+        principal_ids=principal_ids,
         source_type=source_type,
         doc_type=doc_type,
         metadata_filter=metadata_filter,
