@@ -47,12 +47,17 @@ async def find_by_metadata(
     limit = int(payload.get("limit") or 20)
     limit = max(1, min(limit, 200))
 
+    # Both the JSONB key and value are bound as parameters (never spliced
+    # into the SQL text) — an f-string key was a SQL injection vector, see
+    # hybrid_search.py's metadata_filter handling for the same fix.
     where: list[str] = ["tenant_id = :tid", "status != 'deleted'"]
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit}
     for i, (k, v) in enumerate(metadata.items()):
-        pname = f"mv{i}"
-        where.append(f"doc_metadata->>'{k}' = :{pname}")
-        params[pname] = str(v)
+        key_pname = f"mk{i}"
+        val_pname = f"mv{i}"
+        where.append(f"doc_metadata ->> :{key_pname} = :{val_pname}")
+        params[key_pname] = k
+        params[val_pname] = str(v)
 
     sql = text(
         "SELECT id, title, doc_type, status, review_status, "

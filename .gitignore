@@ -43,3 +43,4 @@ docker-compose.override.yml
 
 # local prod-parity test env (never commit)
 .env.prodtest
+.rbac_design_spec.md

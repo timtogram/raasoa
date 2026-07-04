@@ -88,14 +88,19 @@ async def hybrid_search(
         params["doc_type"] = doc_type
 
     # Metadata filter — query JSONB frontmatter fields
-    # E.g. {"ampel": "grün"} → WHERE d.doc_metadata->>'ampel' = 'grün'
+    # E.g. {"ampel": "grün"} → WHERE d.doc_metadata ->> :key = :val
+    # The key is bound as a parameter (not spliced into the SQL text) —
+    # doc_metadata->>'{mkey}' with an f-string was a SQL injection
+    # vector: a crafted key could break out of the string literal and
+    # neutralize subsequent AND-ed clauses (e.g. an ACL check appended
+    # after this one) via a trailing `--` comment.
     if metadata_filter:
         for i, (mkey, mval) in enumerate(metadata_filter.items()):
-            pname = f"meta_{i}"
-            extra_filters += (
-                f" AND d.doc_metadata->>'{mkey}' = :{pname}"
-            )
-            params[pname] = mval
+            key_pname = f"meta_key_{i}"
+            val_pname = f"meta_val_{i}"
+            extra_filters += f" AND d.doc_metadata ->> :{key_pname} = :{val_pname}"
+            params[key_pname] = mkey
+            params[val_pname] = mval
 
     if principal_id:
         extra_filters += (
