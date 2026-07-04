@@ -39,6 +39,11 @@ from raasoa.schemas.retrieval import (
     RetrieveResponse,
     StructuredAnswer,
 )
+from raasoa.security.principal import (
+    clamp_principal_override,
+    expand_principal_ids,
+    resolve_principal_async,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["retrieval"])
@@ -63,7 +68,8 @@ async def retrieve(
     session: AsyncSession = Depends(get_session),
 ) -> RetrieveResponse:
     """3-layer combined retrieval: Index → Structured → Hybrid Search."""
-    tenant_id = await resolve_tenant_async(http_request)
+    principal = await resolve_principal_async(http_request)
+    tenant_id = principal.tenant_id
     get_retrieve_limiter().check(str(tenant_id))
 
     # Quota check: monthly query limit
@@ -71,6 +77,26 @@ async def retrieve(
     allowed, reason = await check_quota(session, tenant_id, "queries")
     if not allowed:
         raise HTTPException(status_code=429, detail=reason)
+
+    # Resolve the caller's principal closure automatically — a personal
+    # API key scopes results without the caller needing to know/pass
+    # anything. A legacy/tenant-wide key sees everything (principal_ids
+    # stays None), exactly as before this feature existed. An explicit
+    # request.principal_id can only narrow a personal key's own resolved
+    # closure, never impersonate another principal.
+    principal_ids = (
+        None if principal.is_legacy_tenant_wide
+        else await expand_principal_ids(session, tenant_id, principal.principal_id)  # type: ignore[arg-type]
+    )
+    effective_principal_id = clamp_principal_override(
+        principal, request.principal_id, principal_ids,
+    )
+    # An explicit override narrows to exactly that one principal; no
+    # override keeps the caller's full resolved closure (or None for a
+    # legacy/tenant-wide key with no override — meaning "no filtering").
+    final_principal_ids = (
+        [effective_principal_id] if effective_principal_id is not None else principal_ids
+    )
 
     start_time = time.monotonic()
 
@@ -107,6 +133,7 @@ async def retrieve(
         try:
             sq_result = await structured_query(
                 session, request.query, tenant_id,
+                principal_ids=final_principal_ids,
             )
             structured = StructuredAnswer(
                 answer=sq_result.answer,
@@ -135,7 +162,7 @@ async def retrieve(
             tenant_id=tenant_id,
             embedding_provider=provider,
             top_k=request.top_k * 3,
-            principal_id=request.principal_id,
+            principal_ids=final_principal_ids,
             source_type=request.source_type,
             doc_type=request.doc_type,
             metadata_filter=request.metadata_filter,
@@ -260,7 +287,8 @@ async def answer(
     session: AsyncSession = Depends(get_session),
 ) -> AnswerResponse:
     """Grounded answer with citations, or an honest refusal."""
-    tenant_id = await resolve_tenant_async(http_request)
+    principal = await resolve_principal_async(http_request)
+    tenant_id = principal.tenant_id
     get_retrieve_limiter().check(str(tenant_id))
 
     from raasoa.retrieval.answer import (
@@ -271,6 +299,17 @@ async def answer(
         valid_citation_numbers,
     )
 
+    principal_ids = (
+        None if principal.is_legacy_tenant_wide
+        else await expand_principal_ids(session, tenant_id, principal.principal_id)  # type: ignore[arg-type]
+    )
+    effective_principal_id = clamp_principal_override(
+        principal, request.principal_id, principal_ids,
+    )
+    final_principal_ids = (
+        [effective_principal_id] if effective_principal_id is not None else principal_ids
+    )
+
     provider = get_embedding_provider()
     reranker = get_reranker()
     search_results = await search(
@@ -279,7 +318,7 @@ async def answer(
         tenant_id=tenant_id,
         embedding_provider=provider,
         top_k=request.top_k * 3,
-        principal_id=request.principal_id,
+        principal_ids=final_principal_ids,
         source_type=request.source_type,
         metadata_filter=request.metadata_filter,
     )
