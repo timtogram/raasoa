@@ -79,6 +79,16 @@ async def build_index(
 
     Groups claims by (subject, predicate), picks the highest-confidence
     value, and upserts into the index table.
+
+    Claims from a 'restricted'-visibility source are excluded entirely —
+    this fast-lookup index has no per-query principal awareness (it's
+    meant to answer factual queries in <5ms, not run an ACL join per
+    lookup), so restricted facts simply never enter it. Callers still
+    reach them through hybrid_search()/structured_query(), which do apply
+    per-principal ACL filtering. This is a deliberate tradeoff, not an
+    oversight: without it, a restricted HubSpot deal's extracted claims
+    (e.g. "Acme Corp: deal_amount = $50,000") would be answerable via the
+    knowledge index layer regardless of who's asking.
     """
     # Fetch all active claims grouped by subject + predicate
     result = await session.execute(
@@ -87,10 +97,12 @@ async def build_index(
             "  c.confidence, c.id as claim_id, c.document_id "
             "FROM claims c "
             "JOIN documents d ON c.document_id = d.id "
+            "JOIN sources src ON src.id = d.source_id "
             "WHERE d.tenant_id = :tid "
             "  AND c.status = 'active' "
             "  AND d.review_status NOT IN "
             "    ('quarantined', 'rejected', 'superseded', 'deleted') "
+            "  AND src.default_visibility != 'restricted' "
             "ORDER BY c.subject, c.predicate, c.confidence DESC"
         ),
         {"tid": tenant_id},
