@@ -16,7 +16,7 @@ cli = [
 ]
 
 [project.scripts]
-raasoa = "raasoa_client.cli:main"
+raasoa = "raasoa_client.cli:run"
 
 [build-system]
 requires = ["hatchling"]
