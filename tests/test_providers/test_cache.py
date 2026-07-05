@@ -97,3 +97,37 @@ async def test_cache_tenant_tracking() -> None:
     cache = EmbeddingCache(provider)
     cache._current_tenant_id = "test-tenant"
     assert provider._current_tenant_id == "test-tenant"
+
+
+@pytest.mark.asyncio
+async def test_cache_keys_are_input_type_aware() -> None:
+    """Regression for F-021: the same literal text embedded as a
+    document vs. a query must not share a cache entry — an asymmetric
+    embedding model (Cohere) produces different vectors for each, so
+    conflating them would silently return the wrong-typed embedding."""
+    provider = FakeProvider()
+    cache = EmbeddingCache(provider, max_size=100)
+
+    await cache.embed(["same text"], input_type="search_document")
+    assert provider.call_count == 1
+
+    await cache.embed(["same text"], input_type="search_query")
+    assert provider.call_count == 2  # not served from the document-type cache entry
+
+
+@pytest.mark.asyncio
+async def test_cache_forwards_input_type_to_provider() -> None:
+    class RecordingProvider(FakeProvider):
+        last_input_type: str | None = None
+
+        async def embed(
+            self, texts: list[str], *, input_type: str = "search_document"
+        ) -> list[list[float]]:
+            self.last_input_type = input_type
+            return await super().embed(texts, input_type=input_type)
+
+    provider = RecordingProvider()
+    cache = EmbeddingCache(provider, max_size=100)
+
+    await cache.embed(["q"], input_type="search_query")
+    assert provider.last_input_type == "search_query"
