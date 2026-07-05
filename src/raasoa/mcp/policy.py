@@ -86,13 +86,16 @@ async def audit_denials(
 ) -> None:
     """Best-effort audit log for denied items.
 
-    Posts to ``/v1/audit`` if available; falls back to a structured logger
-    line so denials are still observable when the audit endpoint is absent.
+    Posts to ``/v1/analytics/audit`` (the endpoint's own docstring notes
+    it's "Used by MCP policy-gate"); falls back to a structured logger
+    line so denials are still observable when the audit call fails.
     """
     if not denied:
         return
     reasons = [d.get("policy_reason") for d in denied]
-    doc_ids = [d.get("document_id") or d.get("doc_id") for d in denied]
+    doc_ids = [
+        d.get("document_id") or d.get("doc_id") or d.get("id") for d in denied
+    ]
     payload: dict[str, Any] = {
         "action": "mcp.policy_denied",
         "resource_type": "tool_call",
@@ -110,7 +113,7 @@ async def audit_denials(
         timeout = httpx.Timeout(5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(
-                f"{base_url}/v1/audit",
+                f"{base_url}/v1/analytics/audit",
                 json=payload,
                 headers=headers,
             )
@@ -130,7 +133,24 @@ async def audit_denials(
 
 
 def env_default_clearance() -> str:
-    """Server-wide default clearance for MCP. Tenants can tighten via
-    config but cannot loosen above this. Allows ops to lock the bar
-    server-side."""
+    """Server-wide default clearance for MCP — used when a tool call
+    doesn't specify ``agent_clearance``."""
     return os.environ.get("RAASOA_MCP_DEFAULT_CLEARANCE", DEFAULT_CLEARANCE)
+
+
+def effective_clearance(requested: str | None) -> str:
+    """Resolve the clearance actually applied to a tool call.
+
+    The env-configured default (``RAASOA_MCP_DEFAULT_CLEARANCE``) is a
+    hard ceiling: an agent may request a *lower* clearance than the
+    ceiling (to intentionally see less), but a request for a *higher*
+    clearance is clamped down to the ceiling, never honored as-is.
+    Previously ``arguments.get("agent_clearance") or env_default_clearance()``
+    let any caller-supplied value override the ceiling outright — a
+    caller passing ``agent_clearance: "secret"`` saw everything
+    regardless of the server-side default.
+    """
+    ceiling = env_default_clearance()
+    if not requested:
+        return ceiling
+    return requested if _rank(requested) <= _rank(ceiling) else ceiling

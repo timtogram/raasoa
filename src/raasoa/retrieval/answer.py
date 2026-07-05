@@ -55,6 +55,10 @@ class SourceChunk:
     source_url: str | None
     source_location: str | None
     text: str
+    # Document frontmatter (classification, etc.) — carried through to
+    # AnswerCitation so the MCP policy-gate can filter citations the same
+    # way it filters raasoa_search hits.
+    doc_metadata: dict[str, object] | None = None
 
 
 def build_sources_block(chunks: list[SourceChunk]) -> str:

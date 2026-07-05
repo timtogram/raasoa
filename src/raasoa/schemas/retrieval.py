@@ -88,6 +88,8 @@ class AnswerCitation(BaseModel):
     source_location: str | None = None
     chunk_id: str
     quote: str
+    # Document frontmatter (used by MCP policy-gate, etc.)
+    doc_metadata: dict[str, Any] | None = None
 
 
 class AnswerResponse(BaseModel):

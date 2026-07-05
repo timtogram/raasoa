@@ -60,6 +60,23 @@ def _make_error(msg_id: int | str | None, code: int, message: str) -> dict[str, 
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
 
 
+def _clearance_property() -> dict[str, Any]:
+    """Shared ``agent_clearance`` input-schema property for every tool
+    whose results are filtered by the MCP policy-gate."""
+    return {
+        "type": "string",
+        "description": (
+            "Policy-gate clearance for the calling agent. "
+            "One of: public, internal, restricted, confidential, secret. "
+            "Content with a higher classification is filtered out and "
+            "audit-logged. Can only request a lower clearance than the "
+            "server-side default (RAASOA_MCP_DEFAULT_CLEARANCE) — a "
+            "higher request is clamped down, never honored as-is."
+        ),
+        "default": "public",
+    }
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
     """Define MCP tools exposed by RAASOA."""
     return [
@@ -93,6 +110,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         ),
                         "default": 0.3,
                     },
+                    "agent_clearance": _clearance_property(),
                 },
                 "required": ["query"],
             },
@@ -128,16 +146,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Filter by source (notion, sharepoint, etc.)",
                     },
-                    "agent_clearance": {
-                        "type": "string",
-                        "description": (
-                            "Policy-gate clearance for the calling agent. "
-                            "One of: public, internal, restricted, "
-                            "confidential, secret. Documents with a higher "
-                            "classification are filtered out and audit-logged."
-                        ),
-                        "default": "public",
-                    },
+                    "agent_clearance": _clearance_property(),
                 },
                 "required": ["query"],
             },
@@ -165,6 +174,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": "Max results (default 20)",
                         "default": 20,
                     },
+                    "agent_clearance": _clearance_property(),
                 },
                 "required": ["metadata"],
             },
@@ -183,6 +193,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "ID of the document to find dependencies for.",
                     },
+                    "agent_clearance": _clearance_property(),
                 },
                 "required": ["document_id"],
             },
@@ -200,6 +211,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "ID of the document.",
                     },
+                    "agent_clearance": _clearance_property(),
                 },
                 "required": ["document_id"],
             },
@@ -239,6 +251,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": "Maximum number of documents to return.",
                         "default": 20,
                     },
+                    "agent_clearance": _clearance_property(),
                 },
             },
         },
@@ -255,6 +268,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "UUID of the document.",
                     },
+                    "agent_clearance": _clearance_property(),
                 },
                 "required": ["document_id"],
             },
@@ -505,12 +519,48 @@ def _resource_definitions() -> list[dict[str, Any]]:
     ]
 
 
+async def _clearance_denial_for_document(
+    client: httpx.AsyncClient, doc_id: str, clearance: str, *, tool: str,
+) -> list[dict[str, Any]] | None:
+    """Fetch a document's clearance and return a denial content block if
+    it exceeds ``clearance``; ``None`` if the caller may proceed.
+
+    Used by tools (dependencies, diff) that expose a document's related
+    content without themselves carrying its classification metadata —
+    the underlying REST endpoints already enforce ACL (404 for a
+    restricted doc the caller has no grant for), this adds the
+    classification-based check on top, same as raasoa_get_document.
+    """
+    from raasoa.mcp.policy import audit_denials, hit_is_allowed
+
+    resp = await client.get(f"{BASE_URL}/v1/documents/{doc_id}", headers=_headers())
+    if resp.status_code != 200:
+        return None  # let the caller's own request surface the real error
+    data = resp.json()
+    if hit_is_allowed(data, clearance):
+        return None
+    await audit_denials(
+        BASE_URL, _headers(),
+        tool=tool,
+        query=None,
+        denied=[{**data, "policy_reason": "classification exceeds clearance"}],
+    )
+    return [{
+        "type": "text",
+        "text": (
+            f"Document '{data.get('title', doc_id)}' requires a higher "
+            f"clearance than '{clearance}' — access denied."
+        ),
+    }]
+
+
 async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
     """Execute an MCP tool call and return content blocks."""
     from raasoa.mcp.policy import (
         apply_policy_gate,
         audit_denials,
-        env_default_clearance,
+        effective_clearance,
+        hit_is_allowed,
     )
 
     async with httpx.AsyncClient(timeout=120.0) as client:
@@ -537,6 +587,32 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                         f"{data['confidence']['retrieval_confidence']:.0%})"
                     ),
                 }]
+
+            # Policy-gate: the synthesized answer text was generated FROM
+            # every cited source, so a denied citation can't be redacted
+            # after the fact without risking the prose still restating the
+            # denied fact — refuse the whole answer instead.
+            requested = effective_clearance(arguments.get("agent_clearance"))
+            _, denied_citations = apply_policy_gate(
+                data.get("citations", []), clearance=requested,
+            )
+            if denied_citations:
+                await audit_denials(
+                    BASE_URL, _headers(),
+                    tool="raasoa_answer",
+                    query=arguments.get("query"),
+                    denied=denied_citations,
+                )
+                return [{
+                    "type": "text",
+                    "text": (
+                        "This answer cites a source above your clearance "
+                        f"('{requested}') and cannot be returned. Try "
+                        "raasoa_search with a matching agent_clearance to "
+                        "see what's available at your level."
+                    ),
+                }]
+
             lines = [data["answer"], "", "Sources:"]
             for c in data.get("citations", []):
                 loc = f" — {c['source_location']}" if c.get("source_location") else ""
@@ -563,12 +639,9 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             data = resp.json()
 
             # ── Policy-gate ─────────────────────────────────
-            # Server-side default acts as a hard ceiling; agent
-            # may request a *lower* clearance but never higher.
-            requested = (
-                arguments.get("agent_clearance")
-                or env_default_clearance()
-            )
+            # Server-side default is a hard ceiling; agent may request a
+            # *lower* clearance but a request for higher is clamped down.
+            requested = effective_clearance(arguments.get("agent_clearance"))
             allowed_hits, denied_hits = apply_policy_gate(
                 data.get("results", []),
                 clearance=requested,
@@ -668,6 +741,17 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             data = resp.json()
             items = data.get("items", [])
 
+            requested = effective_clearance(arguments.get("agent_clearance"))
+            allowed_items, denied_items = apply_policy_gate(items, clearance=requested)
+            if denied_items:
+                await audit_denials(
+                    BASE_URL, _headers(),
+                    tool="raasoa_list_documents",
+                    query=None,
+                    denied=denied_items,
+                )
+            items = allowed_items
+
             if not items:
                 return [{"type": "text", "text": "No documents in the knowledge base."}]
 
@@ -690,6 +774,22 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             )
             resp.raise_for_status()
             data = resp.json()
+
+            requested = effective_clearance(arguments.get("agent_clearance"))
+            if not hit_is_allowed(data, requested):
+                await audit_denials(
+                    BASE_URL, _headers(),
+                    tool="raasoa_get_document",
+                    query=None,
+                    denied=[{**data, "policy_reason": "classification exceeds clearance"}],
+                )
+                return [{
+                    "type": "text",
+                    "text": (
+                        f"Document '{data.get('title', doc_id)}' requires a "
+                        f"higher clearance than '{requested}' — access denied."
+                    ),
+                }]
 
             lines = [
                 f"Document: {data.get('title', '(untitled)')}\n"
@@ -716,7 +816,10 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
 
         elif name == "raasoa_quality_report":
             doc_id = arguments["document_id"]
-            resp = await client.get(f"{BASE_URL}/v1/documents/{doc_id}/quality")
+            resp = await client.get(
+                f"{BASE_URL}/v1/documents/{doc_id}/quality",
+                headers=_headers(),
+            )
             resp.raise_for_status()
             data = resp.json()
 
@@ -766,17 +869,26 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
         elif name == "raasoa_find_by_metadata":
             meta = arguments.get("metadata", {})
             limit = arguments.get("limit", 20)
-            # Query documents with matching metadata
-            resp = await client.get(
-                f"{BASE_URL}/v1/documents",
-                params={"limit": limit},
+            resp = await client.post(
+                f"{BASE_URL}/v1/find_by_metadata",
+                json={"metadata": meta, "limit": limit},
                 headers=_headers(),
             )
             resp.raise_for_status()
             data = resp.json()
-            items = data.get("items", [])
-            # Note: server-side metadata filtering would be better
-            # but for now we filter client-side from the document list
+            items = data.get("documents", [])
+
+            requested = effective_clearance(arguments.get("agent_clearance"))
+            allowed_items, denied_items = apply_policy_gate(items, clearance=requested)
+            if denied_items:
+                await audit_denials(
+                    BASE_URL, _headers(),
+                    tool="raasoa_find_by_metadata",
+                    query=None,
+                    denied=denied_items,
+                )
+            items = allowed_items
+
             lines = [f"Documents matching {meta}:\n"]
             if not items:
                 lines.append("No documents found.")
@@ -791,6 +903,12 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
 
         elif name == "raasoa_doc_dependencies":
             doc_id = arguments["document_id"]
+            requested = effective_clearance(arguments.get("agent_clearance"))
+            denial = await _clearance_denial_for_document(
+                client, doc_id, requested, tool="raasoa_doc_dependencies",
+            )
+            if denial:
+                return denial
             resp = await client.get(
                 f"{BASE_URL}/v1/documents/{doc_id}/dependencies",
                 headers=_headers(),
@@ -814,6 +932,12 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
 
         elif name == "raasoa_doc_diff":
             doc_id = arguments["document_id"]
+            requested = effective_clearance(arguments.get("agent_clearance"))
+            denial = await _clearance_denial_for_document(
+                client, doc_id, requested, tool="raasoa_doc_diff",
+            )
+            if denial:
+                return denial
             resp = await client.get(
                 f"{BASE_URL}/v1/documents/{doc_id}/diff",
                 headers=_headers(),
@@ -954,10 +1078,7 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             if not requested_name:
                 return [{"type": "text", "text": "Skill name is required."}]
 
-            clearance = (
-                arguments.get("agent_clearance")
-                or env_default_clearance()
-            )
+            clearance = effective_clearance(arguments.get("agent_clearance"))
 
             # 1) Exact metadata match: type=skill AND frontmatter name=...
             resp = await client.post(
@@ -1013,7 +1134,6 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                             })
 
             # Apply policy gate
-            from raasoa.mcp.policy import hit_is_allowed
             allowed_matches: list[dict[str, Any]] = []
             denied_matches: list[dict[str, Any]] = []
             for m in matches:
@@ -1079,11 +1199,11 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
             meta = best.get("doc_metadata") or doc_data.get("metadata") or {}
 
             # Telemetry: record skill invocation as audit event
-            # (best-effort; never blocks the tool response)
-            import contextlib as _cl
-            with _cl.suppress(Exception):
-                await client.post(
-                    f"{BASE_URL}/v1/audit",
+            # (best-effort; never blocks the tool response, but a failure
+            # is logged rather than silently swallowed)
+            try:
+                audit_resp = await client.post(
+                    f"{BASE_URL}/v1/analytics/audit",
                     json={
                         "action": "skill.invoked",
                         "resource_type": "document",
@@ -1097,6 +1217,13 @@ async def _handle_tool_call(name: str, arguments: dict[str, Any]) -> list[dict[s
                     },
                     headers=_headers(),
                 )
+                if audit_resp.status_code >= 400:
+                    logger.warning(
+                        "skill.invoked audit returned %s: %s",
+                        audit_resp.status_code, audit_resp.text[:200],
+                    )
+            except Exception as e:
+                logger.warning("skill.invoked audit failed: %s", e)
 
             ampel = meta.get("ampel", "?")
             executor = meta.get("executor", "?")

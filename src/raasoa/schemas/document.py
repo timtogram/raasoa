@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -17,6 +18,8 @@ class DocumentSummary(BaseModel):
     last_synced_at: datetime | None
     last_embedded_at: datetime | None
     created_at: datetime
+    # Document frontmatter (used by MCP policy-gate, etc.)
+    doc_metadata: dict[str, Any] | None = None
 
 
 class DocumentDetail(DocumentSummary):

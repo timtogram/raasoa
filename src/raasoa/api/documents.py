@@ -126,7 +126,7 @@ async def list_documents(
         sql = text(
             "SELECT d.id, d.title, d.source_object_id, d.doc_type, d.status, "
             "d.chunk_count, d.version, d.index_tier, d.quality_score, "
-            "d.last_synced_at, d.last_embedded_at, d.created_at "
+            "d.last_synced_at, d.last_embedded_at, d.created_at, d.doc_metadata "
             "FROM documents d "
             "JOIN sources s ON s.id = d.source_id "
             "WHERE d.tenant_id = :tid "
@@ -142,7 +142,7 @@ async def list_documents(
         sql = text(
             "SELECT d.id, d.title, d.source_object_id, d.doc_type, d.status, "
             "d.chunk_count, d.version, d.index_tier, d.quality_score, "
-            "d.last_synced_at, d.last_embedded_at, d.created_at "
+            "d.last_synced_at, d.last_embedded_at, d.created_at, d.doc_metadata "
             "FROM documents d "
             "JOIN sources s ON s.id = d.source_id "
             "WHERE d.tenant_id = :tid "
@@ -174,6 +174,7 @@ async def list_documents(
                 last_synced_at=r.last_synced_at,
                 last_embedded_at=r.last_embedded_at,
                 created_at=r.created_at,
+                doc_metadata=r.doc_metadata or {},
             )
             for r in items
         ],
@@ -208,7 +209,7 @@ async def get_document(
             "d.chunk_count, d.version, d.index_tier, d.quality_score, "
             "d.last_synced_at, d.last_embedded_at, d.created_at, "
             "d.embedding_model, d.review_status, d.conflict_status, "
-            "d.access_count "
+            "d.access_count, d.doc_metadata "
             "FROM documents d "
             "JOIN sources s ON s.id = d.source_id "
             "WHERE d.id = :did AND d.tenant_id = :tid"
@@ -253,6 +254,7 @@ async def get_document(
         review_status=doc.review_status,
         conflict_status=doc.conflict_status,
         access_count=doc.access_count,
+        doc_metadata=doc.doc_metadata or {},
         chunks=[
             ChunkDetail(
                 id=c.id, chunk_index=c.chunk_index,
