@@ -294,6 +294,147 @@ async def test_hubspot_sync_ingests_deals_with_owner_acl(
             await session.commit()
 
 
+async def test_hubspot_sync_revokes_old_owner_grant_on_reassignment(
+    private_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """Regression for F-010: syncing the same record twice with a
+    different hubspot_owner_id must remove the OLD owner's ACL grant,
+    not just add a new one for the new owner alongside it."""
+    from raasoa.api.sources import _sync_hubspot
+
+    tenant_id = uuid.uuid4()
+    source_id = uuid.uuid4()
+
+    def _deal_page(owner_id: str) -> dict[str, Any]:
+        return {
+            "results": [{
+                "id": "2001",
+                "properties": {
+                    "dealname": "Reassigned Deal",
+                    "amount": "9000",
+                    "dealstage": "closedwon",
+                    "hubspot_owner_id": owner_id,
+                    "hs_lastmodifieddate": "2026-06-01T00:00:00.000Z",
+                },
+            }],
+            "paging": {},
+        }
+
+    async def _make_reassignment_mock(owner_id: str) -> AsyncMock:
+        seen_types: set[str] = set()
+
+        async def _post(url: str, json: dict[str, Any] | None = None, **_kw: Any) -> _FakeResponse:
+            object_type = url.split("/crm/v3/objects/")[1].split("/search")[0]
+            if object_type not in seen_types:
+                seen_types.add(object_type)
+                if object_type == "deals":
+                    return _FakeResponse(200, _deal_page(owner_id))
+                return _FakeResponse(200, {"results": [], "paging": {}})
+            return _FakeResponse(200, {"results": [], "paging": {}})
+
+        return AsyncMock(side_effect=_post)
+
+    async with private_sessionmaker() as session:
+        await session.execute(
+            sql_text("INSERT INTO tenants (id, name) VALUES (:id, 'HubSpot Reassign Test')"),
+            {"id": tenant_id},
+        )
+        await session.execute(
+            sql_text(
+                "INSERT INTO sources (id, tenant_id, source_type, name, connection_config) "
+                "VALUES (:id, :tid, 'hubspot', 'CRM', '{}'::jsonb)"
+            ),
+            {"id": source_id, "tid": tenant_id},
+        )
+        await session.commit()
+
+        try:
+            # First sync: owned by 42.
+            with (
+                patch("httpx.AsyncClient.post", await _make_reassignment_mock("42")),
+                patch(
+                    "raasoa.providers.factory.get_embedding_provider",
+                    return_value=_DistinctVectorProvider(),
+                ),
+                patch("raasoa.ingestion.pipeline.settings.claim_extraction_enabled", False),
+            ):
+                await _sync_hubspot(
+                    session=session, tenant_id=tenant_id, source_id=source_id,
+                    config={"token": "pat-fake-token", "objects": ["deals"]},
+                    query="*", limit=50,
+                )
+
+            doc_result = await session.execute(
+                sql_text(
+                    "SELECT id FROM documents WHERE tenant_id = :tid AND source_id = :sid"
+                ),
+                {"tid": tenant_id, "sid": source_id},
+            )
+            doc_id = doc_result.scalar_one()
+
+            acl_after_first = await session.execute(
+                sql_text("SELECT principal_id FROM acl_entries WHERE document_id = :did"),
+                {"did": doc_id},
+            )
+            assert {r.principal_id for r in acl_after_first.fetchall()} == {"hubspot:owner:42"}
+
+            # Second sync: reassigned to 77.
+            with (
+                patch("httpx.AsyncClient.post", await _make_reassignment_mock("77")),
+                patch(
+                    "raasoa.providers.factory.get_embedding_provider",
+                    return_value=_DistinctVectorProvider(),
+                ),
+                patch("raasoa.ingestion.pipeline.settings.claim_extraction_enabled", False),
+            ):
+                await _sync_hubspot(
+                    session=session, tenant_id=tenant_id, source_id=source_id,
+                    config={"token": "pat-fake-token", "objects": ["deals"]},
+                    query="*", limit=50,
+                )
+
+            acl_after_second = await session.execute(
+                sql_text("SELECT principal_id FROM acl_entries WHERE document_id = :did"),
+                {"did": doc_id},
+            )
+            principal_ids = {r.principal_id for r in acl_after_second.fetchall()}
+            assert principal_ids == {"hubspot:owner:77"}, (
+                "old owner's grant (hubspot:owner:42) must be revoked, not left alongside "
+                "the new owner's grant"
+            )
+        finally:
+            await session.execute(
+                sql_text("DELETE FROM crm_objects WHERE source_id = :sid"), {"sid": source_id},
+            )
+            await session.execute(
+                sql_text(
+                    "DELETE FROM acl_entries WHERE document_id IN "
+                    "(SELECT id FROM documents WHERE source_id = :sid)"
+                ),
+                {"sid": source_id},
+            )
+            await session.execute(
+                sql_text(
+                    "DELETE FROM chunks WHERE document_id IN "
+                    "(SELECT id FROM documents WHERE source_id = :sid)"
+                ),
+                {"sid": source_id},
+            )
+            await session.execute(
+                sql_text("DELETE FROM sync_cursors WHERE source_id = :sid"), {"sid": source_id},
+            )
+            await session.execute(
+                sql_text("DELETE FROM documents WHERE source_id = :sid"), {"sid": source_id},
+            )
+            await session.execute(
+                sql_text("DELETE FROM sources WHERE id = :sid"), {"sid": source_id},
+            )
+            await session.execute(
+                sql_text("DELETE FROM tenants WHERE id = :tid"), {"tid": tenant_id},
+            )
+            await session.commit()
+
+
 async def test_hubspot_sync_requires_token() -> None:
     from raasoa.api.sources import _sync_hubspot
 

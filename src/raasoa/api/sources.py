@@ -1288,14 +1288,20 @@ async def _sync_hubspot(
                         # Owner-based ACL grant: CRM records are sensitive by
                         # default (see default_visibility on the source);
                         # each record grants read access to its own owner.
+                        # Always clear any PRIOR owner-based grant on this
+                        # document first — the old delete only matched
+                        # today's owner_id, so a record whose owner changed
+                        # (or was unassigned) since the last sync kept the
+                        # previous owner's access forever.
+                        await session.execute(
+                            text(
+                                "DELETE FROM acl_entries "
+                                "WHERE document_id = :did "
+                                "AND source_acl_id LIKE 'hubspot_owner:%'"
+                            ),
+                            {"did": doc.id},
+                        )
                         if owner_id:
-                            await session.execute(
-                                text(
-                                    "DELETE FROM acl_entries "
-                                    "WHERE document_id = :did AND source_acl_id = :said"
-                                ),
-                                {"did": doc.id, "said": f"hubspot_owner:{owner_id}"},
-                            )
                             await session.execute(
                                 text(
                                     "INSERT INTO acl_entries "
