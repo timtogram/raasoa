@@ -87,8 +87,8 @@ async def list_quality_findings(
     request: Request,
     severity: str | None = Query(default=None),
     finding_type: str | None = Query(default=None),
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
 ) -> list[QualityFindingResponse]:
     """List quality findings (tenant + ACL scoped)."""
@@ -141,8 +141,8 @@ async def list_conflicts(
     request: Request,
     status: str | None = Query(default=None),
     conflict_type: str | None = Query(default=None),
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
 ) -> list[ConflictCandidateResponse]:
     """List conflict candidates (tenant-scoped; ACL-visible on at least
@@ -389,8 +389,8 @@ async def list_reviews(
     request: Request,
     status: str | None = Query(default=None),
     task_type: str | None = Query(default=None),
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
 ) -> list[ReviewTaskResponse]:
     """List review tasks (tenant-scoped)."""

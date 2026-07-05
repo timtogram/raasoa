@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -154,7 +154,7 @@ async def get_dependencies(
 async def tenant_dependency_graph(
     request: Request,
     min_similarity: float = 0.5,
-    limit_nodes: int = 200,
+    limit_nodes: int = Query(default=200, ge=1, le=1000),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Tenant-wide dependency graph.

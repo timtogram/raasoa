@@ -7,7 +7,7 @@ to answer: "Where is our knowledge most unstable?"
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -101,7 +101,7 @@ async def audit_log(
     request: Request,
     action: str | None = None,
     resource_type: str | None = None,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """Query the audit log. Filterable by action and resource type."""

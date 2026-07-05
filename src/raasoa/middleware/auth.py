@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import uuid
 
 from fastapi import HTTPException, Request
@@ -221,7 +222,7 @@ def verify_webhook_secret(request: Request) -> None:
         return
 
     provided = request.headers.get("x-webhook-secret", "").strip()
-    if provided == settings.webhook_secret:
+    if hmac.compare_digest(provided, settings.webhook_secret):
         return
 
     raise HTTPException(

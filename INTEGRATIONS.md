@@ -9,7 +9,7 @@ surfaces**:
 | **MCP — HTTP** | `POST https://<host>/mcp` | cloud clients: Claude.ai, LangDock, Copilot Studio |
 | **REST / OpenAPI** | `https://<host>/openapi.json` | custom actions / connectors (LangDock, Copilot) |
 
-All 16 MCP tools (search, get-skill, dependencies, diff, ingest, …) are
+All 17 MCP tools (search, get-skill, dependencies, diff, ingest, …) are
 available over **both** MCP transports. The REST/OpenAPI path exposes the
 core actions (`searchKnowledge`, `ingestDocument`).
 
@@ -78,7 +78,7 @@ curl -s https://<host>/mcp \
 
 LangDock can connect either way — pick one.
 
-### Option A — MCP (recommended, all 16 tools)
+### Option A — MCP (recommended, all 17 tools)
 1. LangDock → **Settings → MCP Servers → Add**.
 2. Transport: HTTP. URL: `https://<your-host>/mcp`.
 3. Auth header: `Authorization: Bearer sk-your-api-key`.

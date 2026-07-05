@@ -1,6 +1,6 @@
 """Remote MCP transport over HTTP (MCP "Streamable HTTP").
 
-Exposes the same 15 RAASOA MCP tools as the stdio server, but over a
+Exposes the same 17 RAASOA MCP tools as the stdio server, but over a
 single HTTP endpoint so cloud clients can connect:
 
   - Claude.ai  (Settings → Connectors → Custom connector)

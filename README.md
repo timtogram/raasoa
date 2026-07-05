@@ -102,7 +102,7 @@ Local Claude Desktop / Cursor:
 }
 ```
 
-Your agent gets 16 tools to search, evaluate, and reason about your
+Your agent gets 17 tools to search, evaluate, and reason about your
 knowledge — with source provenance on every result, and the MCP
 Policy-Gate enforcing per-agent data clearance.
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +32,8 @@ router = APIRouter(prefix="/v1", tags=["claims"])
 @router.get("/claim-clusters")
 async def list_claim_clusters(
     request: Request,
-    min_variants: int = 2,
+    min_variants: int = Query(default=2, ge=1),
+    limit: int = Query(default=200, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """Find topics where multiple documents disagree.
@@ -42,7 +43,9 @@ async def list_claim_clusters(
     """
     tenant_id = await resolve_tenant_async(request)
     principal_ids = await resolve_principal_ids(request, session)
-    params: dict[str, Any] = {"tid": tenant_id, "min_variants": min_variants}
+    params: dict[str, Any] = {
+        "tid": tenant_id, "min_variants": min_variants, "lim": limit,
+    }
     if principal_ids is not None:
         params["principal_ids"] = principal_ids
     acl_filter = (
@@ -88,7 +91,8 @@ async def list_claim_clusters(
             "GROUP BY predicate_norm "
             "HAVING COUNT(DISTINCT object_value) >= :min_variants "
             "ORDER BY COUNT(DISTINCT object_value) DESC, "
-            "  predicate_norm"
+            "  predicate_norm "
+            "LIMIT :lim"
         ),
         params,
     )

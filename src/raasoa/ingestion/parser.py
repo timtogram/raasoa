@@ -61,8 +61,11 @@ def extract_frontmatter(content: str) -> tuple[dict[str, Any], str]:
 
     # Parse YAML (simple key: value, no external dependency)
     frontmatter: dict[str, Any] = {}
-    for line in yaml_block.split("\n"):
-        line = line.strip()
+    raw_lines = yaml_block.split("\n")
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i].strip()
+        i += 1
         if not line or line.startswith("#"):
             continue
         if ":" in line:
@@ -74,9 +77,29 @@ def extract_frontmatter(content: str) -> tuple[dict[str, Any], str]:
             if value and value[0] in ('"', "'") and value[-1] == value[0]:
                 value = value[1:-1]
 
-            # Parse lists (- item format)
+            # Block-style list ("- item" on following indented lines).
             if value == "":
-                # Could be a list — collect indented lines
+                items: list[str] = []
+                while i < len(raw_lines) and raw_lines[i].strip().startswith("-"):
+                    item = raw_lines[i].strip()[1:].strip()
+                    if item and item[0] in ('"', "'") and item[-1] == item[0]:
+                        item = item[1:-1]
+                    items.append(item)
+                    i += 1
+                frontmatter[key] = items
+                continue
+
+            # Flow-style list ("[a, b, c]").
+            if value.startswith("[") and value.endswith("]"):
+                inner = value[1:-1].strip()
+                items = []
+                if inner:
+                    for part in inner.split(","):
+                        part = part.strip()
+                        if part and part[0] in ('"', "'") and part[-1] == part[0]:
+                            part = part[1:-1]
+                        items.append(part)
+                frontmatter[key] = items
                 continue
 
             # Parse booleans

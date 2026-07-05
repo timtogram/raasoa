@@ -40,6 +40,44 @@ class TestExtractFrontmatter:
         fm, _ = extract_frontmatter(content)
         assert fm["doc_type"] == "skill"
 
+    def test_block_style_list(self) -> None:
+        """F-046: block-style YAML lists were silently dropped entirely
+        (the ``value == ""`` branch just did ``continue`` without
+        collecting the following ``- item`` lines)."""
+        content = "---\ntags:\n  - foo\n  - bar\n  - baz\n---\nBody"
+        fm, _ = extract_frontmatter(content)
+        assert fm["tags"] == ["foo", "bar", "baz"]
+
+    def test_block_style_list_with_quoted_items(self) -> None:
+        content = '---\ntags:\n  - "foo bar"\n  - \'baz\'\n---\nBody'
+        fm, _ = extract_frontmatter(content)
+        assert fm["tags"] == ["foo bar", "baz"]
+
+    def test_flow_style_list(self) -> None:
+        content = "---\ntags: [foo, bar, baz]\n---\nBody"
+        fm, _ = extract_frontmatter(content)
+        assert fm["tags"] == ["foo", "bar", "baz"]
+
+    def test_flow_style_list_empty(self) -> None:
+        content = "---\ntags: []\n---\nBody"
+        fm, _ = extract_frontmatter(content)
+        assert fm["tags"] == []
+
+    def test_list_followed_by_more_keys(self) -> None:
+        """A list block must not swallow subsequent unrelated keys."""
+        content = "---\ntags:\n  - foo\n  - bar\nversion: 2\n---\nBody"
+        fm, _ = extract_frontmatter(content)
+        assert fm["tags"] == ["foo", "bar"]
+        assert fm["version"] == 2
+
+    def test_empty_scalar_value_becomes_empty_list(self) -> None:
+        """A key with no value and nothing following it degrades to an
+        empty list rather than being silently dropped."""
+        content = "---\nnotes:\nversion: 1\n---\nBody"
+        fm, _ = extract_frontmatter(content)
+        assert fm["notes"] == []
+        assert fm["version"] == 1
+
 
 class TestParseTextWithFrontmatter:
     def test_title_from_frontmatter(self) -> None:
