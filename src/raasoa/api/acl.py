@@ -1,4 +1,11 @@
-"""ACL management endpoints — all tenant-scoped via auth middleware."""
+"""ACL management endpoints — admin-only, tenant-scoped.
+
+Granting/revoking access to a document is a privilege-management action,
+not a regular tenant operation — it must go through the same
+``require_admin`` gate as ``update_source_visibility`` (see
+``raasoa.api.sources``), not just tenant-scoping. Without it, any valid
+tenant key could self-grant ``admin`` on any document in the tenant.
+"""
 
 import uuid
 from typing import Any
@@ -8,8 +15,8 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from raasoa.api.admin import require_admin
 from raasoa.db import get_session
-from raasoa.middleware.auth import resolve_tenant_async
 
 router = APIRouter(prefix="/v1", tags=["acl"])
 
@@ -35,15 +42,15 @@ async def create_acl_entry(
     body: AclEntryRequest,
     session: AsyncSession = Depends(get_session),
 ) -> AclEntryResponse:
-    """Create an ACL entry (tenant-scoped)."""
-    tenant_id = await resolve_tenant_async(request)
+    """Create an ACL entry (admin-only, tenant-scoped)."""
+    principal = await require_admin(request, session)
 
     doc_result = await session.execute(
         text(
             "SELECT id FROM documents "
             "WHERE id = :did AND tenant_id = :tid"
         ),
-        {"did": body.document_id, "tid": tenant_id},
+        {"did": body.document_id, "tid": principal.tenant_id},
     )
     if not doc_result.first():
         raise HTTPException(
@@ -84,8 +91,8 @@ async def list_acl_entries(
     document_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> list[AclEntryResponse]:
-    """List ACL entries for a document (tenant-scoped)."""
-    tenant_id = await resolve_tenant_async(request)
+    """List ACL entries for a document (admin-only, tenant-scoped)."""
+    principal = await require_admin(request, session)
 
     # Verify document belongs to tenant
     doc_result = await session.execute(
@@ -93,7 +100,7 @@ async def list_acl_entries(
             "SELECT id FROM documents "
             "WHERE id = :did AND tenant_id = :tid"
         ),
-        {"did": document_id, "tid": tenant_id},
+        {"did": document_id, "tid": principal.tenant_id},
     )
     if not doc_result.first():
         raise HTTPException(
@@ -125,8 +132,8 @@ async def delete_acl_entry(
     entry_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Delete an ACL entry (tenant-scoped)."""
-    tenant_id = await resolve_tenant_async(request)
+    """Delete an ACL entry (admin-only, tenant-scoped)."""
+    principal = await require_admin(request, session)
 
     # Join with documents to verify tenant ownership
     result = await session.execute(
@@ -138,7 +145,7 @@ async def delete_acl_entry(
             "AND d.tenant_id = :tid "
             "RETURNING a.id"
         ),
-        {"eid": entry_id, "tid": tenant_id},
+        {"eid": entry_id, "tid": principal.tenant_id},
     )
     if not result.first():
         raise HTTPException(
