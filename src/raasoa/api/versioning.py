@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
 from raasoa.middleware.auth import resolve_tenant_async
+from raasoa.security.principal import acl_predicate_sql, resolve_principal_ids
 
 router = APIRouter(prefix="/v1", tags=["versioning"])
 
@@ -28,14 +29,24 @@ async def list_versions(
 ) -> list[dict[str, Any]]:
     """List all versions of a document."""
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    params: dict[str, Any] = {"did": document_id, "tid": tenant_id}
+    acl_filter = ""
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+        acl_filter = acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
 
-    # Verify document belongs to tenant
+    # Verify document belongs to tenant AND is ACL-visible to the caller
+    # — a restricted document must 404 the same as a nonexistent one, not
+    # leak its version history.
     doc = await session.execute(
         text(
-            "SELECT id FROM documents "
-            "WHERE id = :did AND tenant_id = :tid"
+            "SELECT d.id FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.id = :did AND d.tenant_id = :tid"
+            f"{acl_filter}"
         ),
-        {"did": document_id, "tid": tenant_id},
+        params,
     )
     if not doc.first():
         raise HTTPException(status_code=404, detail="Document not found")
@@ -75,13 +86,23 @@ async def diff_versions(
     recent versions. Returns a unified diff.
     """
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    doc_params: dict[str, Any] = {"did": document_id, "tid": tenant_id}
+    doc_acl_filter = ""
+    if principal_ids is not None:
+        doc_params["principal_ids"] = principal_ids
+        doc_acl_filter = acl_predicate_sql(
+            doc_alias="d", source_alias="s", tenant_id_param="tid",
+        )
 
     doc = await session.execute(
         text(
-            "SELECT id, title, version FROM documents "
-            "WHERE id = :did AND tenant_id = :tid"
+            "SELECT d.id, d.title, d.version FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.id = :did AND d.tenant_id = :tid"
+            f"{doc_acl_filter}"
         ),
-        {"did": document_id, "tid": tenant_id},
+        doc_params,
     )
     doc_row = doc.first()
     if not doc_row:

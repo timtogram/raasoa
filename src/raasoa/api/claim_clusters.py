@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
 from raasoa.middleware.auth import resolve_tenant_async
+from raasoa.security.principal import acl_predicate_sql, resolve_principal_ids
 
 router = APIRouter(prefix="/v1", tags=["claims"])
 
@@ -40,6 +41,14 @@ async def list_claim_clusters(
     there are at least `min_variants` different values.
     """
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    params: dict[str, Any] = {"tid": tenant_id, "min_variants": min_variants}
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+    acl_filter = (
+        acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
+        if principal_ids is not None else ""
+    )
 
     result = await session.execute(
         text(
@@ -57,8 +66,9 @@ async def list_claim_clusters(
             "    s.name AS source_name "
             "  FROM claims c "
             "  JOIN documents d ON c.document_id = d.id "
-            "  LEFT JOIN sources s ON d.source_id = s.id "
+            "  JOIN sources s ON d.source_id = s.id "
             "  WHERE d.tenant_id = :tid "
+            f"  {acl_filter} "
             ") "
             "SELECT predicate_norm, "
             "  COUNT(DISTINCT object_value) AS variant_count, "
@@ -80,7 +90,7 @@ async def list_claim_clusters(
             "ORDER BY COUNT(DISTINCT object_value) DESC, "
             "  predicate_norm"
         ),
-        {"tid": tenant_id, "min_variants": min_variants},
+        params,
     )
 
     clusters = []
@@ -114,6 +124,14 @@ async def get_cluster_detail(
 ) -> dict[str, Any]:
     """Get all claims for a specific predicate across all documents."""
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    params: dict[str, Any] = {"tid": tenant_id, "pred": predicate.lower().strip()}
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+    acl_filter = (
+        acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
+        if principal_ids is not None else ""
+    )
 
     result = await session.execute(
         text(
@@ -125,12 +143,13 @@ async def get_cluster_detail(
             "  s.name AS source_name, s.source_type "
             "FROM claims c "
             "JOIN documents d ON c.document_id = d.id "
-            "LEFT JOIN sources s ON d.source_id = s.id "
+            "JOIN sources s ON d.source_id = s.id "
             "WHERE d.tenant_id = :tid "
             "  AND LOWER(TRIM(c.predicate)) = :pred "
+            f"  {acl_filter} "
             "ORDER BY c.confidence DESC"
         ),
-        {"tid": tenant_id, "pred": predicate.lower().strip()},
+        params,
     )
 
     claims = [

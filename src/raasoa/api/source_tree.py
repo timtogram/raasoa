@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.db import get_session
 from raasoa.middleware.auth import resolve_tenant_async
+from raasoa.security.principal import acl_predicate_sql, resolve_principal_ids
 
 router = APIRouter(prefix="/v1", tags=["source-tree"])
 
@@ -32,8 +33,19 @@ async def source_tree(
     conflict counts — organized as a tree.
     """
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    params: dict[str, Any] = {"tid": tenant_id}
+    join_acl_filter = ""
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+        join_acl_filter = acl_predicate_sql(
+            doc_alias="d", source_alias="s", tenant_id_param="tid",
+        )
 
-    # Source-level aggregation
+    # Source-level aggregation. The ACL filter lives in the LEFT JOIN's
+    # ON clause (not a WHERE), so a source with zero ACL-visible
+    # documents still appears with an empty summary rather than
+    # disappearing entirely.
     result = await session.execute(
         text(
             "SELECT "
@@ -60,17 +72,26 @@ async def source_tree(
             "   AND c.status = 'active') AS active_claims "
             "FROM sources s "
             "LEFT JOIN documents d "
-            "  ON d.source_id = s.id AND d.status != 'deleted' "
+            "  ON d.source_id = s.id AND d.status != 'deleted'"
+            f"  {join_acl_filter} "
             "WHERE s.tenant_id = :tid "
             "GROUP BY s.id, s.name, s.source_type "
             "ORDER BY s.name"
         ),
-        {"tid": tenant_id},
+        params,
     )
 
     sources = []
     for r in result.fetchall():
-        # Get documents for this source
+        # Get documents for this source — same ACL filter, this time as
+        # a WHERE clause since there's no "keep the row anyway" need.
+        doc_params: dict[str, Any] = {"sid": r.source_id, "tid": tenant_id}
+        doc_acl_filter = ""
+        if principal_ids is not None:
+            doc_params["principal_ids"] = principal_ids
+            doc_acl_filter = acl_predicate_sql(
+                doc_alias="d", source_alias="s", tenant_id_param="tid",
+            )
         docs_result = await session.execute(
             text(
                 "SELECT d.id, d.title, d.quality_score, "
@@ -81,11 +102,13 @@ async def source_tree(
                 "   WHERE c.document_id = d.id "
                 "   AND c.status = 'active') AS claim_count "
                 "FROM documents d "
+                "JOIN sources s ON s.id = d.source_id "
                 "WHERE d.source_id = :sid "
                 "  AND d.status != 'deleted' "
+                f"  {doc_acl_filter} "
                 "ORDER BY d.title"
             ),
-            {"sid": r.source_id},
+            doc_params,
         )
 
         # Build folder tree from source_object_ids

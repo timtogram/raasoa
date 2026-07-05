@@ -17,6 +17,7 @@ from raasoa.schemas.quality import (
     ReviewAction,
     ReviewTaskResponse,
 )
+from raasoa.security.principal import acl_predicate_sql, resolve_principal_ids
 
 router = APIRouter(prefix="/v1", tags=["quality"])
 
@@ -29,16 +30,24 @@ async def get_document_quality(
     document_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> QualityReport:
-    """Get quality report for a document (tenant-scoped)."""
+    """Get quality report for a document (tenant + ACL scoped)."""
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
+    params: dict[str, Any] = {"did": document_id, "tid": tenant_id}
+    acl_filter = ""
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+        acl_filter = acl_predicate_sql(doc_alias="d", source_alias="s", tenant_id_param="tid")
 
     doc_result = await session.execute(
         text(
-            "SELECT id, title, quality_score, review_status, "
-            "conflict_status FROM documents "
-            "WHERE id = :did AND tenant_id = :tid"
+            "SELECT d.id, d.title, d.quality_score, d.review_status, "
+            "d.conflict_status FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.id = :did AND d.tenant_id = :tid"
+            f"{acl_filter}"
         ),
-        {"did": document_id, "tid": tenant_id},
+        params,
     )
     doc = doc_result.first()
     if not doc:
@@ -82,11 +91,19 @@ async def list_quality_findings(
     offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> list[QualityFindingResponse]:
-    """List quality findings (tenant-scoped)."""
+    """List quality findings (tenant + ACL scoped)."""
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
 
     conditions = ["d.tenant_id = :tid"]
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit, "off": offset}
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+        conditions.append(
+            acl_predicate_sql(
+                doc_alias="d", source_alias="s", tenant_id_param="tid",
+            ).removeprefix(" AND ")
+        )
 
     if severity:
         conditions.append("qf.severity = :severity")
@@ -101,6 +118,7 @@ async def list_quality_findings(
         f"qf.severity, qf.details, qf.created_at "
         f"FROM quality_findings qf "
         f"JOIN documents d ON qf.document_id = d.id "
+        f"JOIN sources s ON s.id = d.source_id "
         f"WHERE {where} "
         f"ORDER BY qf.created_at DESC LIMIT :lim OFFSET :off"
     )
@@ -127,11 +145,33 @@ async def list_conflicts(
     offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> list[ConflictCandidateResponse]:
-    """List conflict candidates (tenant-scoped)."""
+    """List conflict candidates (tenant-scoped; ACL-visible on at least
+    one side — see raasoa.retrieval.structured's identical policy for a
+    conflict *summary*: a caller may see that a conflict exists between
+    an open and a restricted document, just not the restricted side's
+    own content elsewhere)."""
     tenant_id = await resolve_tenant_async(request)
+    principal_ids = await resolve_principal_ids(request, session)
 
     conditions = ["tenant_id = :tid"]
     params: dict[str, Any] = {"tid": tenant_id, "lim": limit, "off": offset}
+
+    if principal_ids is not None:
+        params["principal_ids"] = principal_ids
+        visible_doc = acl_predicate_sql(
+            doc_alias="vd", source_alias="vs", tenant_id_param="tid",
+        ).removeprefix(" AND ")
+        conditions.append(
+            "(EXISTS ("
+            "   SELECT 1 FROM documents vd JOIN sources vs ON vs.id = vd.source_id"
+            "   WHERE vd.id = conflict_candidates.document_a_id AND "
+            f"  {visible_doc}"
+            " ) OR EXISTS ("
+            "   SELECT 1 FROM documents vd JOIN sources vs ON vs.id = vd.source_id"
+            "   WHERE vd.id = conflict_candidates.document_b_id AND "
+            f"  {visible_doc}"
+            " ))"
+        )
 
     if status:
         conditions.append("status = :status")
