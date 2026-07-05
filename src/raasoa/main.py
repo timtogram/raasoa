@@ -45,11 +45,20 @@ def _cors_origins() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
-# CORS — allow all origins in dev, restrict in production via CORS_ORIGINS
+_cors_allow_origins = _cors_origins()
+# allow_credentials=True with allow_origins=["*"] makes browsers treat every
+# origin as trusted for cookie-bearing requests (Starlette reflects the
+# caller's Origin back verbatim in that combination) — a CSRF vector against
+# the cookie-authenticated dashboard. Only send credentials when the
+# deployer has explicitly configured a real origin allowlist via
+# CORS_ORIGINS; the wildcard default still allows header-based (bearer
+# token) API access from any origin, just not cookie-credentialed requests.
+_cors_allow_credentials = _cors_allow_origins != ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins(),
-    allow_credentials=True,
+    allow_origins=_cors_allow_origins,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
