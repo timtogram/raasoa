@@ -90,6 +90,16 @@ async def detect_claim_conflicts(
             if sim < 0.7:  # Predicates not similar enough
                 continue
 
+            # Same predicate about a DIFFERENT subject isn't a
+            # contradiction — "IT dept response time = 4h" and "HR dept
+            # response time = 24h" both match on predicate similarity
+            # but describe different entities entirely.
+            if (
+                new_claim.subject.strip().lower()
+                != existing_claim.subject.strip().lower()
+            ):
+                continue
+
             # Check if values actually differ
             if (
                 new_claim.object_value.strip().lower()
@@ -116,12 +126,14 @@ async def detect_claim_conflicts(
                 confidence=confidence,
                 details={
                     "new_claim": {
+                        "id": str(new_claim.id),
                         "subject": new_claim.subject,
                         "predicate": new_claim.predicate,
                         "value": new_claim.object_value,
                         "evidence": new_claim.evidence_span[:200],
                     },
                     "existing_claim": {
+                        "id": str(existing_claim.id),
                         "subject": existing_claim.subject,
                         "predicate": existing_claim.predicate,
                         "value": existing_claim.object_value,

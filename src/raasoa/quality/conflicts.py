@@ -43,7 +43,7 @@ async def detect_conflicts(
 
     # Pass 4: Semantic contradiction
     contradictions = await _detect_semantic_contradictions(
-        session, doc, tenant_id, chunk_embeddings
+        session, doc, tenant_id, chunk_embeddings, chunk_hashes
     )
     conflicts.extend(contradictions)
 
@@ -222,12 +222,17 @@ async def _detect_semantic_contradictions(
     doc: Document,
     tenant_id: uuid.UUID,
     chunk_embeddings: list[list[float]],
+    chunk_hashes: list[bytes],
 ) -> list[ConflictCandidate]:
     """Pass 4: Find chunks that are semantically similar but have different content.
 
     Key insight: if two chunks embed close together (same topic/context)
     but have different content_hashes (different actual text), they may
-    contradict each other.
+    contradict each other. Identical content_hash means identical text —
+    that's a duplicate (pass 1/2's job), never a contradiction, so it's
+    explicitly excluded here rather than scored at distance=0 →
+    confidence=1.0 "contradiction" (every partial re-upload would
+    otherwise flag itself as contradicting its own earlier copy).
     """
     if not chunk_embeddings:
         return []
@@ -240,6 +245,7 @@ async def _detect_semantic_contradictions(
 
     for i in range(max_chunks):
         embedding = chunk_embeddings[i]
+        own_hash = chunk_hashes[i] if i < len(chunk_hashes) else None
 
         # Find nearest neighbors from OTHER documents
         result = await session.execute(
@@ -261,6 +267,9 @@ async def _detect_semantic_contradictions(
         for row in result.fetchall():
             if row.distance > threshold:
                 continue
+
+            if own_hash is not None and row.content_hash == own_hash:
+                continue  # identical text — a duplicate, not a contradiction
 
             # Avoid duplicate conflict pairs
             pair = (min(doc.id, row.document_id), max(doc.id, row.document_id))

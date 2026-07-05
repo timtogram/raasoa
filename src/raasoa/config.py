@@ -60,7 +60,15 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "qwen3:8b"
 
     # LLM Judge for Conflict Resolution
-    llm_judge_enabled: bool = True
+    #
+    # Off by default: unattended, permanent claim supersession decided by
+    # a local LLM with no human in the loop is a real-stakes action even
+    # scoped to a single claim (see raasoa.quality.judge). Set to true to
+    # opt into auto-resolving conflicts above llm_judge_auto_resolve_threshold
+    # during ingestion; judge_conflict() (get a recommendation without
+    # resolving) and the manual /v1/conflicts/{id}/resolve endpoint work
+    # regardless of this setting.
+    llm_judge_enabled: bool = False
     llm_judge_auto_resolve_threshold: float = 0.85
     llm_judge_model: str = ""  # Empty = use ollama_chat_model
 

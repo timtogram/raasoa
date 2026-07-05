@@ -274,75 +274,96 @@ async def auto_resolve_conflicts(
         if verdict.confidence >= threshold and verdict.recommendation in (
             "keep_a", "keep_b",
         ):
-            # Get conflict to find doc IDs
+            # Get the conflict's claim-level details — auto-resolve only
+            # supersedes the ONE conflicting claim, never the whole
+            # document (a document can have 99 valid claims and one
+            # contested one; wiping the whole document out of search
+            # over a single disputed predicate is a data-loss footgun,
+            # not conflict resolution). document_a_id pairs with
+            # "new_claim" and document_b_id with "existing_claim" — see
+            # raasoa.quality.claim_conflicts, the only creator of
+            # claim_contradiction conflicts.
             c_result = await session.execute(
                 text(
-                    "SELECT document_a_id, document_b_id "
+                    "SELECT document_a_id, document_b_id, details "
                     "FROM conflict_candidates WHERE id = :cid"
                 ),
                 {"cid": cid},
             )
             conflict = c_result.first()
+            superseded_claim_id: uuid.UUID | None = None
             if conflict:
-                superseded_doc = (
-                    conflict.document_b_id
-                    if verdict.recommendation == "keep_a"
-                    else conflict.document_a_id
+                raw_details = conflict.details
+                details = (
+                    json.loads(raw_details) if isinstance(raw_details, str)
+                    else raw_details or {}
                 )
+                new_claim_id = (details.get("new_claim") or {}).get("id")
+                existing_claim_id = (details.get("existing_claim") or {}).get("id")
+                losing_claim_id = (
+                    existing_claim_id if verdict.recommendation == "keep_a"
+                    else new_claim_id
+                )
+                if losing_claim_id:
+                    try:
+                        superseded_claim_id = uuid.UUID(str(losing_claim_id))
+                    except ValueError:
+                        superseded_claim_id = None
 
-                # Supersede the losing document
-                await session.execute(
-                    text(
-                        "UPDATE documents "
-                        "SET review_status = 'superseded' "
-                        "WHERE id = :did AND tenant_id = :tid"
-                    ),
-                    {"did": superseded_doc, "tid": tenant_id},
-                )
-                await session.execute(
-                    text(
-                        "UPDATE claims SET status = 'superseded' "
-                        "WHERE document_id = :did"
-                    ),
-                    {"did": superseded_doc},
-                )
+            if superseded_claim_id is None:
+                # No conflict row, or an older row created before claim
+                # ids were stored in `details` — can't be resolved at
+                # claim granularity. Leave it for human review rather
+                # than guessing or falling back to the unsafe
+                # whole-document behavior.
+                stats["kept_for_human"] += 1
+                stats["verdicts"].append(verdict_info)
+                continue
 
-                # Mark conflict as resolved
-                resolution_data = json.dumps({
-                    "resolution": verdict.recommendation,
-                    "resolved_by": "llm_judge",
-                    "confidence": verdict.confidence,
-                    "reasoning": verdict.reasoning,
-                })
-                await session.execute(
-                    text(
-                        "UPDATE conflict_candidates "
-                        "SET status = 'resolved', "
-                        "details = COALESCE(details, CAST('{}' AS jsonb)) "
-                        "|| CAST(:res AS jsonb) "
-                        "WHERE id = :cid"
-                    ),
-                    {"cid": cid, "res": resolution_data},
-                )
+            await session.execute(
+                text(
+                    "UPDATE claims SET status = 'superseded' "
+                    "WHERE id = :cid_claim"
+                ),
+                {"cid_claim": superseded_claim_id},
+            )
 
-                # Close related review tasks
-                await session.execute(
-                    text(
-                        "UPDATE review_tasks "
-                        "SET status = 'approved', completed_at = now() "
-                        "WHERE conflict_id = :cid AND status = 'new'"
-                    ),
-                    {"cid": cid},
-                )
+            # Mark conflict as resolved
+            resolution_data = json.dumps({
+                "resolution": verdict.recommendation,
+                "resolved_by": "llm_judge",
+                "confidence": verdict.confidence,
+                "reasoning": verdict.reasoning,
+            })
+            await session.execute(
+                text(
+                    "UPDATE conflict_candidates "
+                    "SET status = 'resolved', "
+                    "details = COALESCE(details, CAST('{}' AS jsonb)) "
+                    "|| CAST(:res AS jsonb) "
+                    "WHERE id = :cid"
+                ),
+                {"cid": cid, "res": resolution_data},
+            )
 
-                await session.commit()
-                stats["auto_resolved"] += 1
-                verdict_info["auto_resolved"] = True
+            # Close related review tasks
+            await session.execute(
+                text(
+                    "UPDATE review_tasks "
+                    "SET status = 'approved', completed_at = now() "
+                    "WHERE conflict_id = :cid AND status = 'new'"
+                ),
+                {"cid": cid},
+            )
 
-                logger.info(
-                    "Auto-resolved conflict %s: %s (%.0f%% confidence)",
-                    cid, verdict.recommendation, verdict.confidence * 100,
-                )
+            await session.commit()
+            stats["auto_resolved"] += 1
+            verdict_info["auto_resolved"] = True
+
+            logger.info(
+                "Auto-resolved conflict %s: %s (%.0f%% confidence)",
+                cid, verdict.recommendation, verdict.confidence * 100,
+            )
         else:
             stats["kept_for_human"] += 1
 
