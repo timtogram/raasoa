@@ -72,7 +72,7 @@ async def process_one() -> bool:
                 "  ORDER BY priority DESC, created_at ASC "
                 "  LIMIT 1 "
                 "  FOR UPDATE SKIP LOCKED"
-                ") RETURNING id, tenant_id, job_type, payload"
+                ") RETURNING id, tenant_id, job_type, payload, attempts, max_attempts"
             )
         )
         job = result.first()
@@ -97,17 +97,40 @@ async def process_one() -> bool:
 
         except Exception as e:
             logger.exception("Job %s failed: %s", job.id, e)
+            # This rolls back the claim UPDATE's attempts=attempts+1 too
+            # (never committed) — job.attempts (read via RETURNING before
+            # the rollback) still reflects it in memory, but the stored
+            # row would revert to its pre-claim count unless the
+            # failure-path UPDATE below re-applies it explicitly.
             await session.rollback()
 
+            # Only mark 'failed' (a terminal state the claim query's
+            # WHERE status = 'pending' never re-selects) once the retry
+            # budget is exhausted — otherwise reset to 'pending' so a
+            # later poll retries it, persisting the incremented attempts
+            # count so the budget actually counts down instead of
+            # resetting to 0 every failure. Previously this always went
+            # straight to 'failed', so max_attempts was never honored.
+            retry = job.attempts < job.max_attempts
             async with async_session() as err_session:
                 await err_session.execute(
                     text(
-                        "UPDATE job_queue SET status = 'failed', "
-                        "error_message = :err WHERE id = :jid"
+                        "UPDATE job_queue SET status = :status, "
+                        "attempts = :attempts, error_message = :err "
+                        "WHERE id = :jid"
                     ),
-                    {"jid": job.id, "err": str(e)[:500]},
+                    {
+                        "jid": job.id, "err": str(e)[:500],
+                        "status": "pending" if retry else "failed",
+                        "attempts": job.attempts,
+                    },
                 )
                 await err_session.commit()
+            if retry:
+                logger.info(
+                    "Job %s will retry (attempt %d/%d)",
+                    job.id, job.attempts, job.max_attempts,
+                )
             return True
 
 

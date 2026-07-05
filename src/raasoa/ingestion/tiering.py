@@ -84,14 +84,19 @@ async def run_tiering_sweep(session: AsyncSession) -> dict[str, Any]:
     """
     stats = {"promoted_to_hot": 0, "demoted_to_warm": 0, "demoted_to_cold": 0}
 
-    # Find cold candidates: low quality + not accessed in 90+ days
+    # Find cold candidates: low quality + not accessed in 90+ days.
+    # `interval ':cold_days days'` (a bind param inside a quoted interval
+    # literal) is never substituted — Postgres parses it as the literal
+    # 8-character string ':cold_days days', which isn't a valid interval,
+    # so this query raised on every run. make_interval() takes a real
+    # bound parameter instead.
     cold_candidates = await session.execute(
         text(
             "SELECT id FROM documents "
             "WHERE status = 'indexed' AND index_tier != 'cold' "
             "AND (quality_score IS NOT NULL AND quality_score < :cold_quality) "
             "AND (last_accessed_at IS NULL "
-            "     OR last_accessed_at < now() - interval ':cold_days days')"
+            "     OR last_accessed_at < now() - make_interval(days => :cold_days))"
         ),
         {"cold_quality": COLD_MAX_QUALITY, "cold_days": COLD_DAYS_SINCE_ACCESS},
     )
