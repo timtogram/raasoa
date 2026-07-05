@@ -30,10 +30,29 @@ DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
 _valid_sessions: set[str] = set()
 
 
-def _check_auth(request: Request) -> RedirectResponse | None:
-    """Return redirect if dashboard auth required, None if ok."""
-    if not settings.dashboard_password:
+def _check_auth(request: Request) -> Response | None:
+    """Return a response to short-circuit the request if dashboard auth
+    is required and missing/invalid; None if the request may proceed.
+
+    AUTH_ENABLED=true signals a real deployment — the same flag that
+    gates every REST endpoint. The dashboard must not stay open just
+    because DASHBOARD_PASSWORD was left unset (that previously let
+    anonymous callers mint tenant API keys via /dashboard/api/keys); a
+    deployment in that state is misconfigured and is denied, not treated
+    as "no auth required". Only AUTH_ENABLED=false — the same flag used
+    to disable API-key auth everywhere else, e.g. local dev/tests —
+    leaves the dashboard open by default.
+    """
+    if not settings.auth_enabled:
         return None
+    if not settings.dashboard_password:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Dashboard auth is required (AUTH_ENABLED=true) "
+                "but DASHBOARD_PASSWORD is not configured."
+            },
+        )
     token = request.cookies.get("raasoa_session", "")
     if token in _valid_sessions:
         return None
@@ -46,6 +65,14 @@ def _check_auth(request: Request) -> RedirectResponse | None:
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> Response:
     if not settings.dashboard_password:
+        if settings.auth_enabled:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Dashboard auth is required (AUTH_ENABLED=true) "
+                    "but DASHBOARD_PASSWORD is not configured."
+                },
+            )
         return RedirectResponse("/dashboard", status_code=302)
     return templates.TemplateResponse(
         request, "login.html", {"active": "login", "error": None},
@@ -56,7 +83,7 @@ async def login_page(request: Request) -> Response:
 async def login_post(
     request: Request, password: str = Form(...),
 ) -> Response:
-    if password == settings.dashboard_password:
+    if settings.dashboard_password and password == settings.dashboard_password:
         token = secrets.token_urlsafe(32)
         _valid_sessions.add(token)
         resp = RedirectResponse("/dashboard", status_code=302)
