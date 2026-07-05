@@ -34,6 +34,8 @@ async def check_exact_duplicate(
     sql = text(
         "SELECT id, title FROM documents "
         "WHERE tenant_id = :tid AND content_hash = :hash AND id != :exclude_id "
+        "  AND status != 'deleted' "
+        "  AND review_status NOT IN ('quarantined', 'rejected', 'superseded') "
         "LIMIT 1"
     )
     result = await session.execute(
@@ -67,6 +69,8 @@ async def check_chunk_overlap(
         "WHERE d.tenant_id = :tid "
         "  AND c.document_id != :exclude_id "
         "  AND c.content_hash = ANY(:hashes) "
+        "  AND d.status != 'deleted' "
+        "  AND d.review_status NOT IN ('quarantined', 'rejected', 'superseded') "
         "GROUP BY c.document_id, d.title, d.chunk_count "
         "HAVING COUNT(*) > 1 "
         "ORDER BY COUNT(*) DESC "

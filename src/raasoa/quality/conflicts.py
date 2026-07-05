@@ -87,6 +87,8 @@ async def _detect_exact_duplicates(
         text(
             "SELECT id, title FROM documents "
             "WHERE tenant_id = :tid AND content_hash = :hash AND id != :did "
+            "  AND status != 'deleted' "
+            "  AND review_status NOT IN ('quarantined', 'rejected', 'superseded') "
             "LIMIT 5"
         ),
         {"tid": tenant_id, "hash": doc.content_hash, "did": doc.id},
@@ -129,6 +131,8 @@ async def _detect_chunk_overlap(
             "WHERE d.tenant_id = :tid "
             "  AND c.document_id != :did "
             "  AND c.content_hash = ANY(:hashes) "
+            "  AND d.status != 'deleted' "
+            "  AND d.review_status NOT IN ('quarantined', 'rejected', 'superseded') "
             "GROUP BY c.document_id, d.title, d.chunk_count "
             "HAVING COUNT(*) > 1 "
             "ORDER BY COUNT(*) DESC "
@@ -183,6 +187,8 @@ async def _detect_title_supersession(
                 "WHERE tenant_id = :tid AND id != :did "
                 "  AND title IS NOT NULL "
                 "  AND LOWER(title) LIKE :pattern "
+                "  AND status != 'deleted' "
+                "  AND review_status NOT IN ('quarantined', 'rejected', 'superseded') "
                 "ORDER BY created_at DESC LIMIT 5"
             ),
             {
@@ -258,6 +264,8 @@ async def _detect_semantic_contradictions(
                 "WHERE d.tenant_id = :tid "
                 "  AND c.document_id != :did "
                 "  AND c.embedding IS NOT NULL "
+                "  AND d.status != 'deleted' "
+                "  AND d.review_status NOT IN ('quarantined', 'rejected', 'superseded') "
                 "ORDER BY c.embedding <=> :emb "
                 "LIMIT 3"
             ),

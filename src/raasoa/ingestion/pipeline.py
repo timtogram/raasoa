@@ -318,16 +318,18 @@ async def ingest_file(
             logging.getLogger(__name__).error("Claim extraction failed: %s", e)
             await session.rollback()
 
-    # 13. Auto-curate: rebuild index + enqueue full curation job
+    # 13. Auto-curate: incrementally update the index for this document
+    # (not a full tenant rebuild — see update_index_for_document) +
+    # enqueue full curation job.
     if settings.claim_extraction_enabled:
         try:
-            from raasoa.retrieval.knowledge_index import build_index
+            from raasoa.retrieval.knowledge_index import update_index_for_document
 
-            await build_index(session, tenant_id)
+            await update_index_for_document(session, tenant_id, doc.id)
         except Exception:
             import logging
             logging.getLogger(__name__).debug(
-                "Auto index rebuild failed", exc_info=True,
+                "Auto index update failed", exc_info=True,
             )
 
         # Enqueue async curation (normalize predicates, lint)
