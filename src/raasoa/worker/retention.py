@@ -31,6 +31,8 @@ async def run_retention_cleanup() -> dict[str, int]:
         "claims_purged": 0,
         "findings_purged": 0,
         "feedback_purged": 0,
+        "acl_entries_purged": 0,
+        "crm_objects_purged": 0,
     }
 
     async with async_session() as session:
@@ -52,10 +54,20 @@ async def run_retention_cleanup() -> dict[str, int]:
             return stats
 
         for doc_id in doc_ids:
-            # Delete in order: feedback, findings, claims, chunks, versions, doc
+            # Delete in order: feedback, findings, acl_entries, crm_objects,
+            # claims, chunks, versions, doc.
+            #
+            # acl_entries and crm_objects have NO foreign key to documents
+            # (unlike chunks/claims, which FK-cascade), so a tenant
+            # retention-driven hard delete must explicitly purge them here
+            # too, or a document's ACL grants and CRM object row are
+            # orphaned permanently even after the document row itself is
+            # gone.
             for table, col in [
                 ("retrieval_feedback", "document_id"),
                 ("quality_findings", "document_id"),
+                ("acl_entries", "document_id"),
+                ("crm_objects", "document_id"),
                 ("claims", "document_id"),
                 ("chunks", "document_id"),
                 ("document_versions", "document_id"),
@@ -65,14 +77,18 @@ async def run_retention_cleanup() -> dict[str, int]:
                     {"did": doc_id},
                 )
                 count = r.rowcount or 0  # type: ignore[attr-defined]
-                if "chunks" in table:
+                if table == "chunks":
                     stats["chunks_purged"] += count
-                elif "claims" in table:
+                elif table == "claims":
                     stats["claims_purged"] += count
-                elif "findings" in table:
+                elif table == "quality_findings":
                     stats["findings_purged"] += count
-                elif "feedback" in table:
+                elif table == "retrieval_feedback":
                     stats["feedback_purged"] += count
+                elif table == "acl_entries":
+                    stats["acl_entries_purged"] += count
+                elif table == "crm_objects":
+                    stats["crm_objects_purged"] += count
 
             # Delete the document itself
             await session.execute(

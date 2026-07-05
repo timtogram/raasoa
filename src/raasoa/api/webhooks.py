@@ -120,13 +120,16 @@ async def webhook_ingest(
             )
 
     if payload.event == "document.deleted":
+        from raasoa.api.sources import _cascade_delete_document_data
+
         result = await session.execute(
             text(
                 "UPDATE documents SET status = 'deleted', "
                 "review_status = 'rejected' "
                 "WHERE tenant_id = :tid AND source_id = :sid "
                 "AND source_object_id = :soid "
-                "AND status != 'deleted'"
+                "AND status != 'deleted' "
+                "RETURNING id"
             ),
             {
                 "tid": tenant_id,
@@ -134,11 +137,17 @@ async def webhook_ingest(
                 "soid": payload.source_object_id,
             },
         )
+        deleted_doc_ids = [row.id for row in result.fetchall()]
+        # A deleted document's ACL grants (e.g. a HubSpot record owner's
+        # read access) and CRM object row have no FK to documents, so
+        # they'd otherwise persist forever; chunks/claims are covered too
+        # for defense-in-depth even though they FK-cascade on hard delete.
+        await _cascade_delete_document_data(session, deleted_doc_ids)
         await session.commit()
         return WebhookResponse(
             status="processed",
             event=payload.event,
-            message=f"Deletion processed ({result.rowcount} affected)",  # type: ignore[attr-defined]
+            message=f"Deletion processed ({len(deleted_doc_ids)} affected)",
         )
 
     if payload.event in ("document.created", "document.updated"):

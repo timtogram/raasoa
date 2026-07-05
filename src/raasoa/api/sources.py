@@ -465,6 +465,43 @@ async def delete_source(
     return {"status": "deleted", "id": str(source_id)}
 
 
+async def _cascade_delete_document_data(
+    session: AsyncSession,
+    document_ids: list[uuid.UUID],
+) -> None:
+    """Delete rows that are keyed off a document but not FK-cascaded.
+
+    ``chunks`` and ``claims`` already cascade on ``documents`` deletion via
+    ``ON DELETE CASCADE`` foreign keys, and are cleaned up here as well for
+    symmetry/defense-in-depth for callers that only soft-delete (set
+    ``status = 'deleted'``) rather than hard-deleting the document row.
+    ``acl_entries`` and ``crm_objects`` have NO foreign key to
+    ``documents`` at all, so without this explicit cleanup a deleted
+    document's ACL grants (e.g. a HubSpot record owner's read access) and
+    its CRM object row persist forever, and orphaned chunks/claims remain
+    fully queryable by any code path that doesn't filter on document
+    status.
+    """
+    if not document_ids:
+        return
+    await session.execute(
+        text("DELETE FROM acl_entries WHERE document_id = ANY(:dids)"),
+        {"dids": document_ids},
+    )
+    await session.execute(
+        text("DELETE FROM crm_objects WHERE document_id = ANY(:dids)"),
+        {"dids": document_ids},
+    )
+    await session.execute(
+        text("DELETE FROM chunks WHERE document_id = ANY(:dids)"),
+        {"dids": document_ids},
+    )
+    await session.execute(
+        text("DELETE FROM claims WHERE document_id = ANY(:dids)"),
+        {"dids": document_ids},
+    )
+
+
 async def _dispatch_sync(
     source_type: str,
     session: AsyncSession,
@@ -572,7 +609,10 @@ async def sync_source(
             {"err": str(e)[:500], "sid": source_id},
         )
         await session.commit()
-        raise HTTPException(status_code=500, detail=f"Sync failed: {e}") from e
+        raise HTTPException(
+            status_code=500,
+            detail="Sync failed - check server logs for details",
+        ) from e
 
 
 async def _sync_notion(
@@ -623,33 +663,49 @@ async def _sync_notion(
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        # Search Notion
-        search_body: dict[str, Any] = {
-            "page_size": min(limit, 100),
-        }
-        if query and query != "*":
-            search_body["query"] = query
-        if last_sync_token:
-            search_body["filter"] = {"property": "object", "value": "page"}
-            search_body["sort"] = {
-                "direction": "descending",
-                "timestamp": "last_edited_time",
+        # Search Notion — follow next_cursor/has_more until Notion reports
+        # there are no more results, so workspaces with more than one page
+        # of results (>100 items) get fully ingested instead of silently
+        # truncating at the first page.
+        results: list[dict[str, Any]] = []
+        next_cursor: str | None = None
+        while True:
+            search_body: dict[str, Any] = {
+                "page_size": min(limit, 100),
             }
+            if query and query != "*":
+                search_body["query"] = query
+            if last_sync_token:
+                search_body["filter"] = {"property": "object", "value": "page"}
+                search_body["sort"] = {
+                    "direction": "descending",
+                    "timestamp": "last_edited_time",
+                }
+            if next_cursor:
+                search_body["start_cursor"] = next_cursor
 
-        resp = await client.post(
-            "https://api.notion.com/v1/search",
-            headers=headers,
-            json=search_body,
-        )
-        if resp.status_code != 200:
-            return {
-                "status": "error",
-                "message": f"Notion API {resp.status_code}",
-            }
+            resp = await client.post(
+                "https://api.notion.com/v1/search",
+                headers=headers,
+                json=search_body,
+            )
+            if resp.status_code != 200:
+                return {
+                    "status": "error",
+                    "message": f"Notion API {resp.status_code}",
+                }
 
-        results = resp.json().get("results", [])
+            page_data = resp.json()
+            results.extend(page_data.get("results", []))
+            if not page_data.get("has_more"):
+                break
+            next_cursor = page_data.get("next_cursor")
+            if not next_cursor:
+                break
+
         stats["found"] = len(results)
         provider = get_embedding_provider()
+        newest_edited_time: str | None = None
 
         for page in results:
             if page.get("object") != "page":
@@ -662,11 +718,19 @@ async def _sync_notion(
             # Extract rich metadata
             meta = _notion_metadata(page)
 
+            # Normalize before comparing — Notion returns trailing-Z
+            # timestamps while a previously-stored cursor may be in
+            # Python's +00:00 offset form (or vice versa); comparing the
+            # raw strings would misclassify changed pages as unchanged
+            # (or the reverse).
+            page_edited_norm = _normalize_timestamp(meta.get("last_edited_time"))
+            last_sync_norm = _normalize_timestamp(last_sync_token)
+
             # Delta-sync: skip if not changed since last sync
             if (
-                last_sync_token
-                and meta.get("last_edited_time")
-                and meta["last_edited_time"] <= last_sync_token
+                last_sync_norm
+                and page_edited_norm
+                and page_edited_norm <= last_sync_norm
             ):
                 stats["unchanged"] += 1
                 continue
@@ -730,6 +794,10 @@ async def _sync_notion(
                 await session.refresh(doc)
 
                 stats["synced"] += 1
+                if page_edited_norm and (
+                    newest_edited_time is None or page_edited_norm > newest_edited_time
+                ):
+                    newest_edited_time = page_edited_norm
                 logger.info(
                     "Synced Notion: %s (%d chunks)", title, doc.chunk_count,
                 )
@@ -738,9 +806,23 @@ async def _sync_notion(
                     {"page": title, "error": str(e)[:200]},
                 )
 
-    # Update delta token for next sync
-    if stats["synced"] > 0:
-        from datetime import UTC, datetime
+    # Update delta token for next sync. Use the max last_edited_time
+    # actually seen among the pages processed in this sync — NOT
+    # wall-clock "now" — so that (a) edits made between the search call
+    # and this write aren't silently skipped next time (their
+    # last_edited_time is always <= now, but may be > the previous
+    # cursor), and (b) pages beyond the first page of results that
+    # weren't reached yet (e.g. sync_limit cut the run short) are never
+    # wrongly treated as already-synced just because the cursor jumped to
+    # "now".
+    if stats["synced"] > 0 and newest_edited_time:
+        # Never move the cursor backwards relative to what was already
+        # stored, in case of a mixed-format comparison edge case.
+        new_token = newest_edited_time
+        if last_sync_token:
+            last_sync_norm_final = _normalize_timestamp(last_sync_token)
+            if last_sync_norm_final and last_sync_norm_final > new_token:
+                new_token = last_sync_norm_final
 
         await session.execute(
             text(
@@ -757,7 +839,7 @@ async def _sync_notion(
             ),
             {
                 "sid": source_id,
-                "token": datetime.now(UTC).isoformat(),
+                "token": new_token,
                 "count": stats["synced"],
             },
         )
@@ -1399,6 +1481,23 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return None
 
 
+def _normalize_timestamp(value: str | None) -> str | None:
+    """Normalize an ISO-8601 timestamp for string comparison/storage.
+
+    Notion emits trailing-Z timestamps (``...Z``); tokens previously stored
+    by this codebase may use Python's ``+00:00`` offset form instead.
+    Comparing/max()-ing the raw strings across these two formats is
+    unreliable (e.g. "2026-01-01T00:00:00.000Z" vs
+    "2026-01-01T00:00:00+00:00" don't compare as equal or consistently
+    ordered as plain strings). Parse and re-render in a single canonical
+    form (UTC, ``+00:00`` offset) before comparing or persisting.
+    """
+    dt = _parse_datetime(value)
+    if dt is None:
+        return None
+    return dt.isoformat()
+
+
 async def _resolve_sharepoint_site_id(
     client: Any,
     headers: dict[str, str],
@@ -1592,7 +1691,8 @@ async def _delete_sharepoint_item(
             "UPDATE documents SET status = 'deleted', "
             "review_status = 'rejected', last_synced_at = now() "
             "WHERE tenant_id = :tid AND source_id = :sid "
-            "AND source_object_id = :soid AND status != 'deleted'"
+            "AND source_object_id = :soid AND status != 'deleted' "
+            "RETURNING id"
         ),
         {
             "tid": tenant_id,
@@ -1600,8 +1700,10 @@ async def _delete_sharepoint_item(
             "soid": _sharepoint_source_object_id(drive_id, item_id),
         },
     )
+    deleted_doc_ids = [row.id for row in result.fetchall()]
+    await _cascade_delete_document_data(session, deleted_doc_ids)
     await session.commit()
-    return int(result.rowcount or 0)  # type: ignore[attr-defined]
+    return len(deleted_doc_ids)
 
 
 async def _ingest_sharepoint_item(
