@@ -27,7 +27,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,7 +80,17 @@ async def resolve_principal_async(request: Request) -> Principal:
                 clearance="secret", is_admin=True, is_legacy_tenant_wide=True,
             )
 
-        row = await _resolve_key_row_from_db(api_key)
+        # A DB error here must fail closed (503), not fall through to the
+        # legacy/tenant-wide branch below — that would silently upgrade a
+        # scoped personal key to unfiltered admin access on a transient
+        # infrastructure failure. See _resolve_key_row_from_db's docstring.
+        try:
+            row = await _resolve_key_row_from_db(api_key)
+        except Exception as e:
+            raise HTTPException(
+                status_code=503,
+                detail="Identity verification temporarily unavailable",
+            ) from e
         if row:
             tenant_id, principal_id, clearance, is_admin = row
             if principal_id is None:
