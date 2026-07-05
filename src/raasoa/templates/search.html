@@ -123,6 +123,30 @@
 </div>
 
 <script>
+function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Only allow http(s) URLs to be used as an href; anything else (javascript:, data:, etc.)
+// is rejected so it can't be used for script execution via a crafted source_url.
+function safeHref(url) {
+    if (typeof url !== 'string') return null;
+    try {
+        const parsed = new URL(url, window.location.origin);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+            return parsed.href;
+        }
+    } catch (e) {
+        // invalid URL
+    }
+    return null;
+}
+
 function setQuery(q) {
     document.getElementById('query-input').value = q;
     doSearch();
@@ -190,8 +214,8 @@ function doSearch(e) {
             html += `
                 <div class="bg-amber-50 border border-amber-200 rounded-lg p-5 mb-6">
                     <div class="text-sm font-medium text-amber-800 mb-1">Direct Answer</div>
-                    <div class="text-lg text-amber-900 font-semibold">${data.structured.answer}</div>
-                    ${data.structured.data ? `<pre class="mt-3 text-xs bg-amber-100 p-3 rounded overflow-x-auto">${JSON.stringify(data.structured.data, null, 2)}</pre>` : ''}
+                    <div class="text-lg text-amber-900 font-semibold">${escapeHtml(data.structured.answer)}</div>
+                    ${data.structured.data ? `<pre class="mt-3 text-xs bg-amber-100 p-3 rounded overflow-x-auto">${escapeHtml(JSON.stringify(data.structured.data, null, 2))}</pre>` : ''}
                 </div>
             `;
         }
@@ -200,7 +224,7 @@ function doSearch(e) {
         if (data.results && data.results.length > 0) {
             html += '<div class="space-y-4">';
             data.results.forEach((hit, i) => {
-                const section = hit.section_title ? `<span class="text-xs text-gray-400 ml-2">${hit.section_title}</span>` : '';
+                const section = hit.section_title ? `<span class="text-xs text-gray-400 ml-2">${escapeHtml(hit.section_title)}</span>` : '';
                 const ranks = [];
                 if (hit.semantic_rank) ranks.push(`semantic #${hit.semantic_rank}`);
                 if (hit.lexical_rank) ranks.push(`lexical #${hit.lexical_rank}`);
@@ -208,6 +232,8 @@ function doSearch(e) {
 
                 // Truncate text for display
                 const text = hit.text.length > 400 ? hit.text.substring(0, 400) + '...' : hit.text;
+
+                const sourceHref = safeHref(hit.source_url);
 
                 html += `
                     <div class="bg-white rounded-lg border border-gray-200 p-5 hover:border-indigo-300 transition-colors">
@@ -219,12 +245,12 @@ function doSearch(e) {
                             </div>
                             <span class="text-xs text-gray-400">${rankStr}</span>
                         </div>
-                        <p class="text-sm text-gray-700 whitespace-pre-line leading-relaxed">${text}</p>
+                        <p class="text-sm text-gray-700 whitespace-pre-line leading-relaxed">${escapeHtml(text)}</p>
                         <div class="mt-3 flex items-center gap-3 flex-wrap">
-                            ${hit.document_title ? '<span class="text-xs font-medium text-gray-700">' + hit.document_title + '</span>' : ''}
-                            ${hit.source_url ? '<a href="' + hit.source_url + '" target="_blank" class="text-xs text-blue-600 hover:underline">Open source &nearr;</a>' : ''}
-                            ${hit.source_type ? '<span class="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">' + hit.source_type + '</span>' : ''}
-                            <a href="/dashboard/documents/${hit.document_id}" class="text-xs text-indigo-600 hover:text-indigo-800">View in RAASOA &rarr;</a>
+                            ${hit.document_title ? '<span class="text-xs font-medium text-gray-700">' + escapeHtml(hit.document_title) + '</span>' : ''}
+                            ${sourceHref ? '<a href="' + escapeHtml(sourceHref) + '" target="_blank" rel="noopener noreferrer" class="text-xs text-blue-600 hover:underline">Open source &nearr;</a>' : ''}
+                            ${hit.source_type ? '<span class="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">' + escapeHtml(hit.source_type) + '</span>' : ''}
+                            <a href="/dashboard/documents/${encodeURIComponent(hit.document_id)}" class="text-xs text-indigo-600 hover:text-indigo-800">View in RAASOA &rarr;</a>
                         </div>
                     </div>
                 `;
@@ -248,8 +274,8 @@ function doSearch(e) {
         // Update meta sidebar
         searchMeta.classList.remove('hidden');
         document.getElementById('meta-content').innerHTML = `
-            <p><strong>Query:</strong> ${data.query}</p>
-            <p><strong>Routed to:</strong> ${data.routed_to} (${data.routing_reason})</p>
+            <p><strong>Query:</strong> ${escapeHtml(data.query)}</p>
+            <p><strong>Routed to:</strong> ${escapeHtml(data.routed_to)} (${escapeHtml(data.routing_reason)})</p>
             <p><strong>Results:</strong> ${(data.results || []).length}</p>
             <p><strong>Latency:</strong> ${elapsed}ms</p>
             <p><strong>Confidence:</strong> ${confPct}%</p>
@@ -263,7 +289,7 @@ function doSearch(e) {
         btn.textContent = 'Search';
         results.innerHTML = `
             <div class="bg-red-50 border border-red-200 rounded-lg p-5 text-red-700">
-                <strong>Error:</strong> ${err.message}
+                <strong>Error:</strong> ${escapeHtml(err.message)}
             </div>
         `;
     });

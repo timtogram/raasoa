@@ -56,6 +56,25 @@
 </div>
 
 <script>
+function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Delegate clicks on any element carrying data-key-id (e.g. the "Revoke" button
+// injected per API key row) to revokeKey(), instead of building an onclick=""
+// attribute via string concatenation.
+document.addEventListener('click', function (e) {
+    var trigger = e.target.closest('[data-key-id]');
+    if (trigger) {
+        revokeKey(trigger.getAttribute('data-key-id'));
+    }
+});
+
 async function loadTenantInfo() {
     try {
         const resp = await fetch('/dashboard/api/tenant');
@@ -68,11 +87,11 @@ async function loadTenantInfo() {
         document.getElementById('tenant-info').innerHTML = `
             <div class="flex items-center justify-between">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-900">${t.name || 'Default Tenant'}</h3>
-                    <p class="text-sm text-gray-500">ID: <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded">${t.id}</code></p>
+                    <h3 class="text-lg font-semibold text-gray-900">${escapeHtml(t.name || 'Default Tenant')}</h3>
+                    <p class="text-sm text-gray-500">ID: <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded">${escapeHtml(t.id)}</code></p>
                 </div>
                 <span class="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-sm font-medium">
-                    ${t.plan} plan
+                    ${escapeHtml(t.plan)} plan
                 </span>
             </div>
         `;
@@ -91,7 +110,7 @@ async function loadTenantInfo() {
         `;
     } catch (err) {
         document.getElementById('tenant-info').innerHTML =
-            '<p class="text-red-600 text-sm">Error: ' + err.message + '</p>';
+            '<p class="text-red-600 text-sm">Error: ' + escapeHtml(err.message) + '</p>';
     }
 }
 
@@ -99,9 +118,9 @@ function quotaCard(label, current, max, pct) {
     const color = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
     return `
         <div class="bg-white rounded-lg border border-gray-200 p-5">
-            <p class="text-sm text-gray-500 mb-1">${label}</p>
-            <p class="text-2xl font-bold text-gray-900">${current}</p>
-            <p class="text-xs text-gray-400 mb-2">of ${max} max</p>
+            <p class="text-sm text-gray-500 mb-1">${escapeHtml(label)}</p>
+            <p class="text-2xl font-bold text-gray-900">${escapeHtml(current)}</p>
+            <p class="text-xs text-gray-400 mb-2">of ${escapeHtml(max)} max</p>
             <div class="w-full bg-gray-200 rounded-full h-2">
                 <div class="bg-${color}-500 h-2 rounded-full" style="width: ${pct}%"></div>
             </div>
@@ -126,9 +145,9 @@ async function loadUsage() {
         }
         const rows = Object.entries(usage).map(([type, v]) => `
             <tr class="border-b border-gray-100">
-                <td class="py-2 text-sm text-gray-700">${type}</td>
-                <td class="py-2 text-sm text-right font-medium">${v.total || 0}</td>
-                <td class="py-2 text-sm text-right text-gray-500">${v.events || 0} events</td>
+                <td class="py-2 text-sm text-gray-700">${escapeHtml(type)}</td>
+                <td class="py-2 text-sm text-right font-medium">${escapeHtml(v.total || 0)}</td>
+                <td class="py-2 text-sm text-right text-gray-500">${escapeHtml(v.events || 0)} events</td>
             </tr>
         `).join('');
         document.getElementById('usage-summary').innerHTML = `
@@ -136,7 +155,7 @@ async function loadUsage() {
         `;
     } catch (err) {
         document.getElementById('usage-summary').innerHTML =
-            '<p class="text-red-600 text-sm">Error: ' + err.message + '</p>';
+            '<p class="text-red-600 text-sm">Error: ' + escapeHtml(err.message) + '</p>';
     }
 }
 
@@ -157,11 +176,11 @@ async function loadKeys() {
         const rows = keys.map(k => `
             <tr class="border-b border-gray-100 hover:bg-gray-50">
                 <td class="px-5 py-3">
-                    <p class="text-sm font-medium text-gray-900">${k.name}</p>
-                    <code class="text-xs text-gray-500">${k.key_prefix}</code>
+                    <p class="text-sm font-medium text-gray-900">${escapeHtml(k.name)}</p>
+                    <code class="text-xs text-gray-500">${escapeHtml(k.key_prefix)}</code>
                 </td>
                 <td class="px-5 py-3 text-sm text-gray-500">
-                    ${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'Never'}
+                    ${k.last_used_at ? escapeHtml(new Date(k.last_used_at).toLocaleString()) : 'Never'}
                 </td>
                 <td class="px-5 py-3">
                     ${k.is_active
@@ -170,7 +189,7 @@ async function loadKeys() {
                 </td>
                 <td class="px-5 py-3 text-right">
                     ${k.is_active
-                        ? '<button onclick="revokeKey(\\'' + k.id + '\\')" class="text-xs text-red-600 hover:underline">Revoke</button>'
+                        ? '<button data-key-id="' + escapeHtml(k.id) + '" class="text-xs text-red-600 hover:underline">Revoke</button>'
                         : ''}
                 </td>
             </tr>
@@ -190,7 +209,7 @@ async function loadKeys() {
         `;
     } catch (err) {
         document.getElementById('keys-list').innerHTML =
-            '<p class="p-5 text-sm text-red-600">Error: ' + err.message + '</p>';
+            '<p class="p-5 text-sm text-red-600">Error: ' + escapeHtml(err.message) + '</p>';
     }
 }
 
@@ -220,16 +239,16 @@ async function createKey() {
             resultDiv.innerHTML = `
                 <div class="bg-green-50 border border-green-300 rounded p-3">
                     <p class="text-sm font-semibold text-green-800 mb-1">Key created — save it now, it won't be shown again:</p>
-                    <code class="block bg-white border border-green-200 rounded p-2 text-sm font-mono select-all break-all">${data.key}</code>
+                    <code class="block bg-white border border-green-200 rounded p-2 text-sm font-mono select-all break-all">${escapeHtml(data.key)}</code>
                 </div>
             `;
             document.getElementById('key-name').value = '';
             loadKeys();
         } else {
-            resultDiv.innerHTML = '<p class="text-sm text-red-600">' + (data.detail || 'Error') + '</p>';
+            resultDiv.innerHTML = '<p class="text-sm text-red-600">' + escapeHtml(data.detail || 'Error') + '</p>';
         }
     } catch (err) {
-        resultDiv.innerHTML = '<p class="text-sm text-red-600">' + err.message + '</p>';
+        resultDiv.innerHTML = '<p class="text-sm text-red-600">' + escapeHtml(err.message) + '</p>';
     }
 }
 
