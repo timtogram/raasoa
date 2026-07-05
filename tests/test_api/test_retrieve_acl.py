@@ -214,7 +214,7 @@ async def test_retrieve_auto_scopes_to_personal_principal(
     from raasoa.main import app
 
     with patch(
-        "raasoa.providers.factory.get_embedding_provider",
+        "raasoa.api.retrieval.get_embedding_provider",
         return_value=_DistinctVectorProvider(),
     ):
         transport = ASGITransport(app=app)
