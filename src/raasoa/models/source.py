@@ -27,6 +27,13 @@ class Source(UUIDMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # 'inherit' (default-open-if-no-ACL, today's behavior) or 'restricted'
+    # (deny by default unless an acl_entries/source_acl_grants row
+    # matches the caller) — see alembic m3f4a5b6c7d8 and
+    # raasoa.security.principal.acl_predicate_sql.
+    default_visibility: Mapped[str] = mapped_column(
+        Text, nullable=False, default="inherit", server_default="inherit",
+    )
 
     tenant: Mapped[Tenant] = relationship(back_populates="sources")  # noqa: F821
     documents: Mapped[list[Document]] = relationship(back_populates="source")  # noqa: F821

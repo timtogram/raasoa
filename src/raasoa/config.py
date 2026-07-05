@@ -16,6 +16,18 @@ class Settings(BaseSettings):
     s3_bucket: str = "raasoa-artifacts"
 
     # Embedding Provider
+    #
+    # embedding_dimensions MUST match the actual, fixed width of the
+    # chunks.embedding pgvector column in the live database (768 by
+    # default — see migration 3a8758ffa2b0_initial_schema_with_foreign_keys.py
+    # and the note on raasoa.models.chunk.Chunk.embedding). This setting
+    # does NOT resize the column at runtime; a real Postgres vector column
+    # has a fixed dimension once created. Changing EMBEDDING_PROVIDER to
+    # one with a different native dimension (e.g. "openai" -> 1536,
+    # per .env.example) requires a deliberate, explicit companion
+    # migration to ALTER chunks.embedding to the new width (and re-embed
+    # existing rows) BEFORE this value is changed — do not just bump the
+    # env var.
     embedding_provider: str = "ollama"
     embedding_dimensions: int = 768
 

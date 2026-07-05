@@ -33,6 +33,20 @@ class Chunk(UUIDMixin, Base):
     section_title: Mapped[str | None] = mapped_column(Text)
     chunk_type: Mapped[str] = mapped_column(Text, default="text", server_default="text")
     token_count: Mapped[int | None] = mapped_column(Integer)
+    # IMPORTANT: settings.embedding_dimensions is a runtime/env-configurable
+    # value, but the underlying Postgres column is NOT dynamically sized —
+    # it was created with a fixed width (768) by migration
+    # 3a8758ffa2b0_initial_schema_with_foreign_keys.py and has never been
+    # ALTERed since. settings.embedding_dimensions must match that actual
+    # DB column width for the deployment in use (768 by default, i.e.
+    # EMBEDDING_PROVIDER=ollama). Switching EMBEDDING_PROVIDER to one with
+    # a different native dimension (e.g. openai -> 1536) WILL NOT resize
+    # the column just by changing the env var — it requires a companion
+    # migration that explicitly ALTERs chunks.embedding to the new
+    # dimension (and re-embeds existing rows). Do not treat this
+    # Vector(settings.embedding_dimensions) call as proof the column is
+    # dynamically sized; it only reflects what the model expects, not what
+    # Postgres actually has.
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector(settings.embedding_dimensions)
     )
