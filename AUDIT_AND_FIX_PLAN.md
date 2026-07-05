@@ -204,7 +204,10 @@ exactly one head `n4a5b6c7d8e9`, no fork problem (the g7a8/g7b8 fork is correctl
 `19dc365e7974`); `pg_trgm` extension **is** created (migrations g7a8/l2e3) and installed, so the
 Graph page does not 500; the CRM path is committed and functional (not a blocker); `boto3` confirmed
 unused (F-042); `tenants.plan` default confirmed corrupt (F-037); `api_keys.id`/`key_prefix` confirmed
-have no defaults (root of the broken bootstrap SQL, F-035).
+have no defaults (root of the broken bootstrap SQL, F-035) — **since fixed**: `key_prefix` genuinely
+has no default and must be supplied by callers (see the corrected `DEPLOYMENT.md` bootstrap SQL under
+T-26); `id` now has `server_default=gen_random_uuid()` as of migration `q7d8e9f0a1b2` (T-25), matching
+the other 10 new tables and the `UUIDMixin` base class it was already silently assuming.
 
 ---
 
@@ -370,50 +373,217 @@ this project's own CI). Live end-to-end re-verification: Ollama-outage degradati
 endpoints, and the full demo flow (load demo data → retrieve → answer, with the conflict now staying
 open for review instead of auto-resolving).
 
-**Not yet done:** Phases D–E (T-19 through T-28) and the Open Questions in §5.
-
-### Phase D — Connectors & worker
+### Phase D — Connectors & worker — ✅ DONE (2026-07-05)
 
 - **T-19 (F-022)** — `api/sources.py`. Paginate Notion search (`next_cursor`/`has_more`); set the
   delta cursor from the max `last_edited_time` seen, not wall clock; normalize timestamp formats.
-  **Accept:** a >100-page workspace ingests all pages across runs. **M / medium.**
+  **Accept:** a >100-page workspace ingests all pages across runs. **M / medium.** ✅ Implemented:
+  `while True` loop follows `next_cursor`/`has_more`; a new `_normalize_timestamp()` helper
+  canonicalizes Notion's `...Z` vs. the codebase's `+00:00` offset form before comparing/max()-ing,
+  and the cursor write uses the max `last_edited_time` seen across processed pages (never wall
+  clock), with a guard against the cursor moving backward. **Verified:** full diff read; confirmed
+  via direct code inspection that `_normalize_timestamp` delegates to the existing `_parse_datetime`
+  helper and re-renders via `.isoformat()`.
 - **T-20 (F-010, F-025)** — `api/sources.py`, `api/webhooks.py`, `worker/retention.py`. On owner
   reassignment delete the *old* owner grant; on delete cascade to (or filter) chunks/claims/acl_entries/crm_objects.
   **Accept:** reassigned HubSpot record drops the old owner's access; deleted doc's ACL rows are gone.
-  **M / medium.**
+  **M / medium.** ✅ Implemented: HubSpot owner reassignment now revokes *any* prior
+  `hubspot_owner:%` grant, not just today's specific owner_id; a new shared
+  `_cascade_delete_document_data()` helper (used by both the SharePoint webhook delete path and
+  `api/webhooks.py`'s `document.deleted` handler) deletes `acl_entries`/`crm_objects`/`chunks`/`claims`
+  rows for the affected document IDs; `worker/retention.py`'s purge loop gained
+  `acl_entries_purged`/`crm_objects_purged` stats and a latent substring-match bug (`"chunks" in
+  table` matching unintended tables) was fixed to an exact `table == "chunks"` check. **Verified:**
+  full diff read for all three files; ran the relevant test suites; confirmed via `git stash` that
+  `tests/test_api/test_deletion_cascade.py` and the retention tests fail without the fix and pass
+  with it restored.
 - **T-21 (F-023, F-024)** — `ingestion/tiering.py`, `worker/queue.py`. Bind the interval param
   correctly (`now() - (:cold_days || ' days')::interval`); honor `max_attempts` before marking
   `failed`. **Accept:** `run_tiering_sweep` executes without interval syntax error; a failing job
-  retries up to `max_attempts`. **S / low.**
+  retries up to `max_attempts`. **S / low.** ✅ Implemented in Phase C's push (see above); re-confirmed
+  present and covered by `tests/test_ingestion/test_tiering.py` and `tests/test_ingestion/test_worker_queue.py`,
+  both green in the final full-suite run.
 - **T-22 (F-031, F-032)** — `quality/conflicts.py`, `duplicate.py`, `ingestion/pipeline.py`. Filter
   `status != 'deleted'` in conflict/dup queries; make the index update incremental per-document (or
   lock) instead of a full tenant rebuild. **Accept:** re-uploading a deleted doc isn't flagged as its
-  own duplicate; concurrent ingests don't corrupt the index. **M / medium.**
+  own duplicate; concurrent ingests don't corrupt the index. **M / medium.** ✅ Implemented: all four
+  conflict-detection passes (`_detect_exact_duplicates`, `_detect_chunk_overlap`,
+  `_detect_title_supersession`, `_detect_semantic_contradictions`) and both `duplicate.py` checks now
+  exclude `status = 'deleted'` and quarantined/rejected/superseded review statuses. The knowledge
+  index gained `update_index_for_document(session, tenant_id, document_id)` — an incremental,
+  per-document update that recomputes only the affected `(subject, predicate)` keys (including keys
+  that reference the document being retracted) instead of the previous full-tenant rebuild;
+  `ingestion/pipeline.py` step 13 now calls this instead of `build_index()`, which is kept for the
+  standalone worker job / manual admin use. **Verified:** full diff read for both quality files; ran
+  19 tests across `test_deleted_doc_exclusion.py`, `test_knowledge_index_incremental.py`,
+  `test_knowledge_index.py`, `test_knowledge_index_acl.py` — all green; confirmed via `git stash` that
+  3/6 conflict tests fail without the status filter. Note: the incremental update narrows but doesn't
+  fully eliminate a rare same-key concurrent-write race — judged an acceptable improvement matching
+  the acceptance criterion's intent (no more full-tenant corruption) without adding advisory-locking
+  complexity that wasn't asked for.
 
-### Phase E — Data hygiene, deploy, docs
+**Verification:** every T-19–T-22 file diff was read in full (not sampled); each fix's test file was
+run individually and, via `git stash push -- <file>` / run test / `git stash pop`, confirmed to fail
+against the pre-fix code and pass with the fix restored — this is the same rigor as Phase C, applied
+independently after the fixing agents reported done, per the standing "trust but verify" approach for
+this audit.
+
+### Phase E — Data hygiene, deploy, docs — ✅ DONE (2026-07-05)
 
 - **T-23 (F-026)** — `api/ingestion.py`. Enforce size limit via streaming / `Content-Length` before
   reading the whole body. **Accept:** oversized upload rejected without buffering it all. **S / low.**
+  ✅ Implemented: reads in bounded 1MB chunks, checking cumulative size against `max_file_size_mb` on
+  every iteration and raising 413 as soon as the threshold is crossed, instead of the previous
+  `await file.read()` that buffered the entire body before any check ran. **Verified:** new
+  `tests/test_api/test_ingestion.py` asserts the handler performs ≤3 chunk reads and never reads the
+  full oversized body — confirmed passing with the fix and, via `git stash`, failing without it
+  (`assert 6291456 < 6291456` — proving the old code read the entire 6MB payload before rejecting).
 - **T-24 (F-027, F-028)** — `templates/search.html`, `upload.html`, `sources.html`, `account.html`.
   Escape user content in JS `innerHTML` sinks (use `textContent`/escape helper); fix the `\\'`
   escaping in revoke/sync onclick handlers. **Accept:** a doc titled `<img onerror>` doesn't execute;
-  Revoke and post-connect Sync buttons work. **M / medium.**
+  Revoke and post-connect Sync buttons work. **M / medium.** ✅ Implemented: an `escapeHtml()` helper
+  in all four templates now wraps every interpolated value in `innerHTML` template strings;
+  `search.html` gained a `safeHref()` that only allows `http:`/`https:` URLs (rejects
+  `javascript:`/`data:`) for the "Open source" link, plus `encodeURIComponent` on document IDs used
+  in path segments; the fragile `onclick="revokeKey(\\'...\\')"`/`onclick="syncSource(\\'...\\')"`
+  string-concatenation patterns were replaced with `data-key-id`/`data-sync-source-id` attributes plus
+  a delegated `document.addEventListener('click', ...)` handler. **Verified live in-browser**
+  (`preview_start`/`preview_eval`/`preview_click`/`preview_screenshot` against the running dashboard,
+  not just static review): injected `<img src=x onerror=...>`, `<script>`, `<svg onload=...>`,
+  `javascript:` URLs, and attribute-breakout payloads (`id-"><script>...`) into mocked API responses
+  for all four pages; confirmed `window.__xssFired` never fired, all payloads rendered as literal
+  escaped text in the DOM (screenshot captured), the malicious `javascript:` source link was omitted
+  entirely by `safeHref`, and the click-delegation handlers correctly extracted the raw (HTML-decoded)
+  id from the `data-*` attribute without executing the embedded script.
 - **T-25 (F-033, F-034, F-037)** — `models/*.py`. Add ORM models/columns for the 11 migration-only
   tables + `admin_api_enabled`/`default_visibility`; make `chunk.embedding` dimension consistent with
   config across model and migration; fix the `plan` server default (`'free'` → `free`). **Accept:**
-  `alembic revision --autogenerate` produces an empty diff. **L / medium.**
+  `alembic revision --autogenerate` produces an empty diff. **L / medium.** ✅ Implemented: 11 new ORM
+  model classes across 5 new files (`crm.py`, `feedback.py`, `ops.py`, `principals.py`, `saas.py`);
+  `default_visibility` (Source) and `admin_api_enabled` (Tenant) columns added; `chunk.py` gained a
+  detailed comment documenting that `Vector(settings.embedding_dimensions)` reflects the model's
+  expectation, not a dynamically-resizable column — the actual Postgres column is fixed at `dim=768`
+  by migration `3a8758ffa2b0` and switching `EMBEDDING_PROVIDER` alone will not resize it (confirmed
+  the migration's hardcoded width matches `config.py`'s default). The `tenants.plan` double-quoted
+  `server_default` bug was fixed via new migration `o5b6c7d8e9f0` (data repair + `server_default =
+  sa.text("'free'")`). **Verified, with a real gap found and closed during independent review:** ran
+  `alembic revision --autogenerate` before and after — zero `drop_table`/`add_column`/`drop_column`
+  entries (only pre-existing, out-of-scope index-declaration gaps on older tables, unrelated to this
+  audit). While verifying, discovered the exact same double-quoting bug pattern
+  (`server_default="'word'"`) affected three more columns the original fix didn't cover
+  (`knowledge_index.status`, `knowledge_syntheses.status`, `job_queue.status`) — confirmed by
+  compiling each column's DDL directly against current migration-file content rather than trusting
+  this one long-lived dev database's current state (a migration file can be edited after a table was
+  first created without the live table ever seeing the new DDL). Wrote a follow-up migration
+  `p6c7d8e9f0a1` fixing all three, updated the corresponding model files
+  (`feedback.py`/`ops.py`/`tenant.py`) to use `server_default=text(...)`, and corrected an
+  over-cautious comment on `principal_groups.origin` that had incorrectly flagged it as having the
+  same risk (proved via DDL compilation that its unquoted `server_default="manual"` does not
+  reproduce the bug). Applied both migrations via `alembic upgrade head` and confirmed live via
+  `psql` that all four columns now show correctly single-quoted defaults. **A second, separate gap**
+  surfaced from the same verification pass: of the 11 new tables, only 4 (`crm_objects`,
+  `principal_groups`, `principal_memberships`, `source_acl_grants`) had their migration set
+  `id`'s `server_default=gen_random_uuid()` — the other 7 (`retrieval_feedback`,
+  `knowledge_syntheses`, `knowledge_index`, `audit_events`, `job_queue`, `api_keys`, `usage_events`)
+  didn't, even though every one of the 11 models inherits `UUIDMixin`, which declares that default
+  unconditionally — a real model/migration mismatch autogenerate never flagged because
+  `compare_server_default` isn't enabled in `alembic/env.py`. Checked every actual `INSERT INTO` call
+  site for all 7 tables (11 call sites across `retrieval/feedback.py`, `quality/synthesis.py`,
+  `retrieval/knowledge_index.py`, `middleware/audit.py`, `worker/queue.py`, 4 sites for `api_keys`
+  across `api/keys.py`/`api/admin.py`/`api/tenants.py`/`dashboard/routes.py`,
+  `middleware/metering.py`) — every one already supplies `id` explicitly via Python's `uuid.uuid4()`,
+  so this was never a live bug, only latent drift. Added migration `q7d8e9f0a1b2` to bring all 7 in
+  line with the other 4 and with the models; applied via `alembic upgrade head` and confirmed live
+  via `psql` that all 7 now show `gen_random_uuid()` as their column default. Re-ran
+  `alembic revision --autogenerate` once more afterward — still zero `add_column`/`drop_column`/
+  `drop_table` entries.
 - **T-26 (F-035, F-003)** — `Dockerfile`, `docker-entrypoint.sh`, `DEPLOYMENT.md`. Copy `examples/`
   into the image (fixes F-003); make the entrypoint pass `"$@"` so `docker compose run api alembic …`
   works; correct the bootstrap-key SQL and the signup path in docs. **Accept:** Load Demo Data works
-  in a built image; documented ops commands run as written. **M / medium.**
+  in a built image; documented ops commands run as written. **M / medium.** ✅ Implemented: Dockerfile
+  now `COPY examples/ examples/`; `docker-entrypoint.sh` masks the DSN in startup logs (shows only
+  `host:port/db`, never credentials) and execs any passed-through command (`if [ "$#" -gt 0 ]; then
+  exec "$@"; fi`) after the DB-wait loop instead of always running the default migrate-then-serve
+  flow; `DEPLOYMENT.md` corrected the signup endpoint (`/v1/tenants`, not `/v1/tenants/signup`), fixed
+  the bootstrap `api_keys` INSERT to supply the required `key_prefix` column and use
+  `encode(digest(...), 'hex')` matching `_hash_key`'s actual hex-string format (plus a
+  `pgcrypto`-extension note), and corrected the retention-purge command to use `--entrypoint` since
+  the `scheduler` service pins a hard `entrypoint:` in `docker-compose.yml` that a bare trailing
+  command would be appended to, not replace. **Verified independently, not just trusting the prior
+  claim:** ran a real `docker buildx build --platform linux/amd64 --load .`; confirmed `examples/`
+  (including `samples`) present in the built image via `docker run --entrypoint ls`; ran the full
+  entrypoint flow against the real Postgres container (`docker run --network raasoa_default ...`) and
+  confirmed the masked log line, DB-wait, and command-passthrough all work as documented. Also fixed
+  one further doc inaccuracy found during verification: the comment claiming `api_keys.id` "has no
+  column default" was wrong (it has `server_default=gen_random_uuid()`, a Postgres 13+ builtin) —
+  corrected to note `id` is optional while `key_prefix` genuinely has no default.
 - **T-27 (F-041, F-042, F-045)** — `docker-entrypoint.sh`, `pyproject.toml`, `.github/workflows/ci.yml`.
   Stop echoing the DSN; remove `boto3`+S3 config (or wire artifact storage); make mypy/format gate CI
   now that both pass. **Accept:** startup logs contain no password; CI fails on a type error. **S / low.**
+  ✅ Implemented: DSN masking (see T-26); `boto3` removed from `pyproject.toml`/`uv.lock`; CI's mypy
+  step no longer has `continue-on-error: true`. **Verified:** grepped `src/`+`tests/` for any
+  remaining `boto3`/`import boto` references (none); ran `uv run mypy src/raasoa` locally to confirm
+  it's actually clean before trusting the hard CI gate (`Success: no issues found in 109 source
+  files`) — hardening the gate without first confirming this would have been a real risk of breaking
+  CI on the next push.
 - **T-28 (F-038, F-039, F-040, F-044, F-046)** — Minor polish batch: generic 500 detail in
   sources.py:552; `Query(ge=…, le=…)` bounds on unbounded list params; `hmac.compare_digest` for the
   webhook secret; rebuild/version-bump the client wheel; reconcile tool-count docs; add a `USER`
   directive to the Dockerfile; register the `requires_ollama` pytest marker. **Accept:** ruff/mypy/tests
-  green; params bounded. **S / low.**
+  green; params bounded. **S / low.** ✅ Implemented: `sources.py:552` now returns a generic message
+  instead of leaking the internal exception string; `Query(ge=..., le=...)` bounds added across
+  `quality.py`, `analytics.py`, `claim_clusters.py`, `dependencies.py` (new
+  `tests/test_api/test_list_endpoint_bounds.py`, 8 tests, no live DB required since FastAPI validates
+  bounds pre-handler); `middleware/auth.py`'s webhook-secret comparison now uses
+  `hmac.compare_digest` (confirmed the empty-secret case is handled *before* reaching
+  `compare_digest`, so there's no bypass risk from comparing against an empty string);
+  `client/pyproject.toml` bumped 0.1.0 → 0.1.1 and the wheel/sdist rebuilt (gitignored, not
+  committed); `mcp/http_transport.py`/`README.md`/`INTEGRATIONS.md` tool count corrected 15/16 → 17
+  (confirmed by counting the actual `"name": "raasoa_*"` tool definitions in `mcp/server.py`); a
+  non-root `USER raasoa` directive added to the Dockerfile (see verification below).
+  **Investigated and found two items from T-28's own list needed independent completion:**
+  the `requires_ollama` pytest marker was never registered *or* used anywhere — confirmed by grepping
+  the whole repo and checking every ollama-adjacent test, all of which already use
+  `httpx.MockTransport` or pure config-wiring assertions with no live-network dependency, so there is
+  nothing left needing that marker (moot, not a gap). The Dockerfile `USER` directive genuinely was
+  missing — added `groupadd`/`useradd`/`chown -R` plus `USER raasoa`, `PYTHONDONTWRITEBYTECODE=1`, and
+  an explicit `HOME`. **Verified independently:** built the image, confirmed `whoami`/`id` report
+  `uid=999(raasoa)` (non-root); ran the full DB-wait → migrate → serve flow against the real Postgres
+  container end-to-end and confirmed `/health/ready` returns `{"ready":true}` — the user switch
+  didn't break write access anywhere in the startup path.
+  **Also found and fixed one bug from F-046 not on T-28's explicit list:** frontmatter YAML
+  block-style lists (`tags:\n  - foo\n  - bar`) were being silently dropped entirely — the parser's
+  own comment admitted "could be a list — collect indented lines" but the code just did `continue`
+  without collecting anything. Fixed `extract_frontmatter()` in `ingestion/parser.py` to collect
+  indented `- item` lines into a list, and added flow-style (`[a, b, c]`) list support for symmetry.
+  Added 8 new test cases to `tests/test_ingestion/test_frontmatter.py` (14 total, all passing).
+  **Consciously deferred, documented rather than silently dropped** (the other two items named under
+  F-046 but not in T-28's action list): (1) *SharePoint per-drive limit starvation* — the sync loop
+  gives the first drive in iteration order the full remaining `limit` budget before moving to the
+  next, so a single large/busy drive can starve every other drive indefinitely across repeated syncs.
+  This is a throughput/fairness issue, not data loss or corruption — eventually correct if the first
+  drive's backlog is finite — and a proper fix requires a policy decision (round-robin ordering
+  persisted across syncs vs. proportional budget-splitting) that trades off differently depending on
+  expected drive sizes; better made with real usage data than guessed here. (2) *`idempotency_key`
+  unused* — the field is accepted in `WebhookPayload` but never read. In practice this does **not**
+  cause duplicate processing: `ingest_file()` already dedupes on `(tenant_id, source_id,
+  source_object_id)` plus a content hash, and a retry with unchanged content short-circuits into a
+  cheap metadata-only update rather than a fresh ingest. Wiring the field in for real would need a new
+  schema column (or table) plus a TTL/cleanup policy for old idempotency records — a small scoped
+  feature, not a one-line fix, so it's flagged here rather than half-implemented.
+
+**Verification:** T-23's and T-25's test suites were run and, via `git stash`, confirmed to fail
+without their fixes. T-24 (dashboard XSS) was verified **live in a browser** — `preview_start` against
+the real dev server, injecting HTML/script/`javascript:`-URL payloads through mocked API responses on
+all four affected pages, confirming via `preview_eval`/`preview_screenshot` that nothing executed and
+everything rendered as literal escaped text — not just a static diff review. T-26/T-27's Docker/CI
+claims were independently re-verified rather than trusted at face value: a real `docker buildx build`
+was run (not assumed from the fixing agent's report), the built image was run against the real
+Postgres container end-to-end (DB-wait → masked-DSN log line → migrations → non-root `whoami` →
+`/health/ready`), and `mypy`/`ruff` were both re-run locally before accepting the CI hard-gate change.
+Full suite after all of Phase D+E plus the additional fixes found during verification (Dockerfile
+`USER`, frontmatter list parsing, the 3 additional double-quoted-default columns): **414 passed**, 0
+failed, `ruff` and `mypy` both clean.
 
 ---
 
