@@ -83,19 +83,26 @@ async def ingest_document(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
-    file_data = await file.read()
+    max_size = settings.max_file_size_mb * 1024 * 1024
+    chunk_size = 1024 * 1024  # 1MB
+    buffer = bytearray()
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        buffer += chunk
+        if len(buffer) > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"File too large (exceeds {max_size} bytes). "
+                    f"Max: {settings.max_file_size_mb}MB"
+                ),
+            )
+
+    file_data = bytes(buffer)
     if not file_data:
         raise HTTPException(status_code=400, detail="Empty file")
-
-    max_size = settings.max_file_size_mb * 1024 * 1024
-    if len(file_data) > max_size:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"File too large ({len(file_data)} bytes). "
-                f"Max: {settings.max_file_size_mb}MB"
-            ),
-        )
 
     tenant_id, source_id = await _ensure_default_tenant_and_source(
         session, tenant_id
