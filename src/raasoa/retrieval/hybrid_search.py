@@ -248,7 +248,7 @@ async def search(
     metadata_filter: dict[str, str] | None = None,
 ) -> list[SearchResult]:
     """High-level search: embed query, then hybrid search."""
-    embeddings = await embedding_provider.embed([query])
+    embeddings = await embedding_provider.embed([query], input_type="search_query")
     query_embedding = embeddings[0]
 
     return await hybrid_search(

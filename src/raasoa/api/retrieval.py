@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from raasoa.db import get_session
 from raasoa.middleware.auth import resolve_tenant_async
 from raasoa.middleware.rate_limit import get_retrieve_limiter
+from raasoa.providers.base import EmbeddingProviderUnavailableError
 from raasoa.providers.factory import get_embedding_provider
 from raasoa.retrieval.confidence import compute_confidence
 from raasoa.retrieval.factory import get_reranker
@@ -156,17 +157,30 @@ async def retrieve(
         provider = get_embedding_provider()
         reranker = get_reranker()
 
-        search_results = await search(
-            session=session,
-            query=request.query,
-            tenant_id=tenant_id,
-            embedding_provider=provider,
-            top_k=request.top_k * 3,
-            principal_ids=final_principal_ids,
-            source_type=request.source_type,
-            doc_type=request.doc_type,
-            metadata_filter=request.metadata_filter,
-        )
+        try:
+            search_results = await search(
+                session=session,
+                query=request.query,
+                tenant_id=tenant_id,
+                embedding_provider=provider,
+                top_k=request.top_k * 3,
+                principal_ids=final_principal_ids,
+                source_type=request.source_type,
+                doc_type=request.doc_type,
+                metadata_filter=request.metadata_filter,
+            )
+        except EmbeddingProviderUnavailableError as e:
+            # Layer 1/2 already ran — if either found something, return
+            # that rather than failing the whole request over a Layer 3
+            # outage. Otherwise there's nothing to answer with: a clean
+            # 503 beats an unhandled 500.
+            if index_hits or structured:
+                search_results = []
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Embedding service unavailable — try again shortly.",
+                ) from e
         search_results = await reranker.rerank(
             request.query, search_results, request.top_k,
         )
@@ -291,6 +305,14 @@ async def answer(
     tenant_id = principal.tenant_id
     get_retrieve_limiter().check(str(tenant_id))
 
+    # Quota check: monthly query limit — /v1/answer does a full retrieval
+    # plus LLM synthesis, strictly more expensive than /v1/retrieve, so it
+    # must be gated the same way rather than only tracked after the fact.
+    from raasoa.middleware.metering import check_quota
+    allowed, reason = await check_quota(session, tenant_id, "queries")
+    if not allowed:
+        raise HTTPException(status_code=429, detail=reason)
+
     from raasoa.retrieval.answer import (
         REFUSAL_TEXT,
         SourceChunk,
@@ -312,16 +334,32 @@ async def answer(
 
     provider = get_embedding_provider()
     reranker = get_reranker()
-    search_results = await search(
-        session=session,
-        query=request.query,
-        tenant_id=tenant_id,
-        embedding_provider=provider,
-        top_k=request.top_k * 3,
-        principal_ids=final_principal_ids,
-        source_type=request.source_type,
-        metadata_filter=request.metadata_filter,
-    )
+    try:
+        search_results = await search(
+            session=session,
+            query=request.query,
+            tenant_id=tenant_id,
+            embedding_provider=provider,
+            top_k=request.top_k * 3,
+            principal_ids=final_principal_ids,
+            source_type=request.source_type,
+            metadata_filter=request.metadata_filter,
+        )
+    except EmbeddingProviderUnavailableError:
+        # The product's whole differentiator is refusing instead of
+        # erroring — that promise must hold even when the outage is in
+        # the embedding step, not just the synthesis step.
+        return AnswerResponse(
+            query=request.query,
+            answered=False,
+            answer=REFUSAL_TEXT,
+            citations=[],
+            confidence=ConfidenceInfo(
+                retrieval_confidence=0.0, source_count=0,
+                top_score=0.0, answerable=False,
+            ),
+            refusal_reason="embedding service unavailable",
+        )
     search_results = await reranker.rerank(
         request.query, search_results, request.top_k,
     )
@@ -361,6 +399,7 @@ async def answer(
             source_url=r.source_url,
             source_location=r.source_location,
             text=r.chunk_text,
+            doc_metadata=r.doc_metadata,
         )
         for i, r in enumerate(search_results)
     ]
@@ -403,6 +442,7 @@ async def answer(
             source_location=c.source_location,
             chunk_id=c.chunk_id,
             quote=c.text[:280],
+            doc_metadata=c.doc_metadata,
         )
         for c in chunks
         if c.n in valid_used

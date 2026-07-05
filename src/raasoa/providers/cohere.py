@@ -34,7 +34,9 @@ class CohereEmbeddingProvider:
     def dimensions(self) -> int:
         return self._dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self, texts: list[str], *, input_type: str = "search_document"
+    ) -> list[list[float]]:
         if not texts:
             return []
 
@@ -45,8 +47,13 @@ class CohereEmbeddingProvider:
                 json={
                     "model": self._model,
                     "texts": texts,
-                    "input_type": "search_document",
+                    "input_type": input_type,
                     "embedding_types": ["float"],
+                    # embed-v4.0 defaults to its native 1536-dim output;
+                    # without this, inserts into the pgvector column
+                    # (Vector(settings.embedding_dimensions), 768 by
+                    # default) fail on every ingest.
+                    "output_dimension": self._dimensions,
                 },
             )
             response.raise_for_status()

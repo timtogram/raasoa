@@ -13,7 +13,10 @@ class FakeProvider:
     _current_tenant_id: str | None = None
     call_count = 0
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self, texts: list[str], *, input_type: str = "search_document"
+    ) -> list[list[float]]:
+        del input_type
         self.call_count += len(texts)
         return [[float(i), 0.0, 0.0] for i in range(len(texts))]
 

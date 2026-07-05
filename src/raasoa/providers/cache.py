@@ -54,17 +54,24 @@ class EmbeddingCache:
         if hasattr(self._provider, "_current_tenant_id"):
             self._provider._current_tenant_id = value
 
-    def _hash(self, text: str) -> str:
-        return hashlib.sha256(text.encode()).hexdigest()
+    def _hash(self, text: str, input_type: str) -> str:
+        # input_type is part of the key: a document text embedded as
+        # "search_document" and the (rare, but possible) identical
+        # string embedded as a "search_query" are different vectors
+        # under an asymmetric embedding model (Cohere) — conflating them
+        # would silently return the wrong-typed embedding.
+        return hashlib.sha256(f"{input_type}:{text}".encode()).hexdigest()
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self, texts: list[str], *, input_type: str = "search_document"
+    ) -> list[list[float]]:
         """Embed texts, using cache for already-seen content."""
         results: list[list[float] | None] = [None] * len(texts)
         to_embed: list[tuple[int, str]] = []  # (index, text)
 
         # Check cache
         for i, text in enumerate(texts):
-            key = self._hash(text)
+            key = self._hash(text, input_type)
             if key in self._cache:
                 # Move to end (LRU)
                 self._cache.move_to_end(key)
@@ -77,13 +84,15 @@ class EmbeddingCache:
         # Embed uncached texts
         if to_embed:
             uncached_texts = [t for _, t in to_embed]
-            embeddings = await self._provider.embed(uncached_texts)
+            embeddings = await self._provider.embed(
+                uncached_texts, input_type=input_type,
+            )
 
             for (idx, text), embedding in zip(
                 to_embed, embeddings, strict=True,
             ):
                 results[idx] = embedding
-                key = self._hash(text)
+                key = self._hash(text, input_type)
                 self._cache[key] = embedding
 
                 # Evict oldest if over limit

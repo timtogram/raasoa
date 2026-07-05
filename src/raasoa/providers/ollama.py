@@ -3,6 +3,7 @@ import asyncio
 import httpx
 
 from raasoa.config import settings
+from raasoa.providers.base import EmbeddingProviderUnavailableError
 
 BATCH_SIZE = 5
 MAX_RETRIES = 3
@@ -47,6 +48,21 @@ class OllamaEmbeddingProvider:
                     continue
                 # Last resort: embed one by one
                 return await self._embed_one_by_one(client, texts)
+            except httpx.TransportError:
+                # Connection refused/timed out — Ollama itself is
+                # unreachable, not just this one request. Retrying the
+                # exact same broken connection a few times is still
+                # worthwhile (transient blips), but exhausting retries
+                # here means a systemic outage: don't silently degrade
+                # the whole batch to zero vectors (that would corrupt
+                # search/embeddings for every text without anyone
+                # noticing) — raise so the caller can refuse cleanly.
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_DELAY * 2**attempt)
+                    continue
+                raise EmbeddingProviderUnavailableError(
+                    f"Ollama unreachable at {self._base_url}"
+                ) from None
 
         return await self._embed_one_by_one(client, texts)
 
@@ -77,12 +93,28 @@ class OllamaEmbeddingProvider:
                         )
                         # Zero vector fallback — tracked by quality gate
                         results.append([0.0] * self._dimensions)
+                except httpx.TransportError:
+                    # Same reasoning as _embed_batch: a total outage must
+                    # not degrade to zero vectors — raise instead.
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(RETRY_DELAY * 2**attempt)
+                    else:
+                        raise EmbeddingProviderUnavailableError(
+                            f"Ollama unreachable at {self._base_url}"
+                        ) from None
         return results
 
     # Track total calls for metering (set by pipeline before calling embed)
     _current_tenant_id: str | None = None
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self, texts: list[str], *, input_type: str = "search_document"
+    ) -> list[list[float]]:
+        # input_type distinguishes asymmetric embedding models (Cohere);
+        # Ollama's embedding models don't have that concept, so it's
+        # accepted for interface compatibility with EmbeddingProvider and
+        # otherwise unused.
+        del input_type
         all_embeddings: list[list[float]] = []
         texts = [t[:8000] if len(t) > 8000 else t for t in texts]
 

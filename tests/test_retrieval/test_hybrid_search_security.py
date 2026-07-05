@@ -69,7 +69,10 @@ class _ZeroVectorProvider:
     model_id = "test-stub"
     dimensions = 768
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self, texts: list[str], *, input_type: str = "search_document"
+    ) -> list[list[float]]:
+        del input_type
         return [[0.0] * 768 for _ in texts]
 
 

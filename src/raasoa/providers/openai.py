@@ -76,8 +76,16 @@ class OpenAIEmbeddingProvider:
             return {"api-key": self._api_key}
         return {"Authorization": f"Bearer {self._api_key}"}
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts using the configured OpenAI-compatible endpoint."""
+    async def embed(
+        self, texts: list[str], *, input_type: str = "search_document"
+    ) -> list[list[float]]:
+        """Embed texts using the configured OpenAI-compatible endpoint.
+
+        ``input_type`` is accepted for EmbeddingProvider interface
+        compatibility (Cohere uses it for asymmetric embeddings) but
+        OpenAI-compatible embedding models have no such concept.
+        """
+        del input_type
         if not texts:
             return []
 
