@@ -176,9 +176,22 @@ async def hybrid_search(
             LIMIT :candidate_limit
         )
         ,feedback AS (
+            -- Feedback is query-agnostic (no similarity filter against
+            -- the current query — see raasoa.retrieval.feedback's module
+            -- docstring for the aspirational "similar queries" design
+            -- that was never wired up here), so a single rating on a
+            -- chunk affects every future query tenant-wide, not just
+            -- related ones. To keep that from dominating relevance
+            -- (max combined RRF score is ~1/(rrf_k+1) per signal, e.g.
+            -- ~0.033 with both weights at their 1.0 default and
+            -- rrf_k=60), the boost is capped well below RRF scale — a
+            -- nudge among near-ties, never enough to override actual
+            -- relevance for an unrelated query. rating is already
+            -- bound to [-1, 1] (see FeedbackRequest), so AVG(rating) is
+            -- too; 0.003 caps the maximum boost at ~9% of RRF's ceiling.
             SELECT chunk_id,
                 COALESCE(SUM(rating), 0) /
-                    GREATEST(COUNT(*), 1) * 0.1 AS boost
+                    GREATEST(COUNT(*), 1) * 0.003 AS boost
             FROM retrieval_feedback
             WHERE tenant_id = :tenant_id
             GROUP BY chunk_id
