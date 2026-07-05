@@ -254,8 +254,9 @@ suite: 305 passed, 4 skipped (up from 256 at audit time), `ruff check` and `mypy
 documented demo flow (`docker compose up -d` → dashboard → Load Demo Data → `/v1/retrieve` →
 `/v1/answer`) was re-verified end-to-end after all five fixes and still works.
 
-**Not yet done:** Phases B–E (T-06 through T-28) remain open, as does the AUTH_ENABLED-by-default
-product decision in Open Question 1.
+**Not yet done (at the time Phase A completed):** Phases B–E (T-06 through T-28), as does the
+AUTH_ENABLED-by-default product decision in Open Question 1. *(Update: Phases B and C are now also
+done — see below.)*
 
 ### Phase B — MCP governance — ✅ DONE (2026-07-05)
 
@@ -299,40 +300,77 @@ against a running instance with demo data (tagging a document `classification: s
 clearance than the server ceiling has no effect). Full suite: 333 passed, `ruff` and `mypy --strict`
 clean.
 
-**Not yet done:** Phases C–E (T-10 through T-28), the `structured`-block gating noted above, and the
-Open Questions in §5.
+**Not yet done (at the time Phase B completed):** Phases C–E, the `structured`-block gating noted
+above, and the Open Questions in §5. *(Update: Phase C is now also done — see below.)*
 
-### Phase C — Retrieval / quality correctness
+### Phase C — Retrieval / quality correctness — ✅ DONE (2026-07-05)
 
-- **T-10 (F-008)** — `providers/ollama.py` (+ maybe `retrieval/hybrid_search.py`). Catch
-  `httpx.HTTPError` (incl. `ConnectError`/`TimeoutException`); on total embed failure surface 503 or
-  route `/v1/answer` to an honest refusal, not 500. **Accept:** with Ollama stopped, `POST /v1/answer`
-  returns a refusal or 503. **M / medium.**
-- **T-11 (F-012)** — `retrieval/hybrid_search.py`. Scope the feedback boost to query-similar rows (as
-  documented) or cap it far below RRF scale; decouple from confidence normalization. **Accept:** a
-  single rating no longer pins a chunk to rank 1 across unrelated queries. **M / medium.**
-- **T-12 (F-018, F-019)** — `retrieval/reranker.py`, `retrieval/confidence.py`. Preserve all
-  `SearchResult` fields through reranking; make `compute_confidence` scale-aware. **Accept:** with
-  `RERANKER=ollama`, citations keep title/url and the confidence gate still fires. **M / medium.**
-- **T-13 (F-013, F-030)** — `quality/claim_conflicts.py`, `judge.py`, `conflicts.py`,
-  `ingestion/pipeline.py`. Compare subject+predicate for claim conflicts; scope supersession to the
-  conflicting claim, not the whole doc; make auto-resolve opt-in (default off) or route to review;
-  skip identical content-hash in the semantic pass. **Accept:** one contradictory claim no longer
-  supersedes a multi-claim document; identical re-upload produces no "contradiction". **L / high.**
-- **T-14 (F-009)** — `retrieval/knowledge_index.py` (+ `api/retrieval.py`). Exclude
-  `acl_entries`-protected docs at build time, or apply a principal filter at `index_lookup`.
-  **Accept:** the test in §3. **M / medium.**
-- **T-15 (F-020)** — `api/retrieval.py`. Add `check_quota(..., "queries")` to `/v1/answer`.
-  **Accept:** over-quota tenant gets 429 from `/v1/answer`. **S / low.**
-- **T-16 (F-021)** — `providers/cohere.py`. Send output dimension; use `search_query` input_type for
-  query embeds. **Accept:** ingest + retrieve succeed with `EMBEDDING_PROVIDER=cohere`. **M / medium.**
-- **T-17 (F-015, F-016)** — `api/claim_clusters.py`, `versioning.py`, `source_tree.py`, `quality.py`,
-  `documents.py`. Apply `acl_predicate_sql` to these read paths; add ACL/admin check to
-  `delete_document`. **Accept:** a scoped principal gets no restricted-doc data from these endpoints
-  and cannot delete a doc it can't read. **M / medium.**
-- **T-18 (F-017)** — `middleware/auth.py`, `security/principal.py`. Fail closed on identity-lookup
-  exceptions instead of degrading to legacy tenant-wide admin. **Accept:** simulated lookup error
-  yields 401/500, not admin. **S / low.**
+- **T-10 (F-008)** — ✅ `providers/ollama.py` now catches `httpx.TransportError` (connection-level
+  failures) separately from `httpx.HTTPStatusError`, retries the same as before, and on exhaustion
+  raises a new `EmbeddingProviderUnavailableError` (`providers/base.py`) instead of silently
+  degrading to zero vectors for a total outage. `api/retrieval.py` catches it in both `retrieve()`
+  (falls back to index/structured results if any, else 503) and `answer()` (honest refusal). Verified
+  live: pointing `OLLAMA_BASE_URL` at an unreachable host now returns 503 from `/v1/retrieve` and a
+  clean refusal from `/v1/answer`, not a 500.
+- **T-11 (F-012)** — ✅ The feedback boost multiplier in `hybrid_search.py`'s CTE dropped from `0.1` to
+  `0.003` (~9% of RRF's ~0.033 ceiling instead of ~3x it) — still a real nudge among near-ties, never
+  enough to override actual relevance for an unrelated query. True query-similarity scoping (the
+  aspirational design in `feedback.py`'s docstring) was not implemented — a much larger feature
+  requiring embedding comparison against historical query text; capping was the scoped, low-risk fix
+  the task explicitly allowed.
+- **T-12 (F-018, F-019)** — ✅ `CrossEncoderReranker`/`OllamaReranker` now rebuild `SearchResult` via
+  `dataclasses.replace()` instead of by hand, preserving all fields (title, url, doc_metadata, etc.)
+  through reranking. Each reranker now declares `SCORE_SCALE` (0.033 for passthrough/RRF, 1.0 for the
+  two LLM/cross-encoder rerankers); `compute_confidence()` takes an explicit `max_score` parameter and
+  both call sites in `api/retrieval.py` pass `reranker.SCORE_SCALE`.
+- **T-13 (F-013, F-030)** — ✅ Four coordinated changes: (1) `claim_conflicts.py` now requires
+  subject match (not just predicate similarity) before flagging a contradiction — "IT dept response
+  time" vs "HR dept response time" no longer false-positives; (2) it now stores each claim's `id` in
+  the conflict's `details` JSONB; (3) `judge.py::auto_resolve_conflicts` reads those ids and
+  supersedes only the one losing **claim**, never the whole document or its other claims — a conflict
+  row from before this fix (no claim ids in `details`) is left for human review rather than falling
+  back to the old whole-document behavior; (4) `conflicts.py`'s semantic-contradiction pass now skips
+  chunks whose `content_hash` matches the current chunk's own hash (identical text is a duplicate,
+  never a "contradiction"). Additionally, `settings.llm_judge_enabled` now defaults to `false`
+  (`config.py`, `.env.example`, both `docker-compose.yml` service blocks) — unattended, permanent
+  claim supersession now requires an explicit opt-in. Verified this doesn't break the demo: `/v1/answer`
+  still correctly cites the newer document via RAG ranking regardless of claim-supersession state
+  (confirmed live before and after), and the demo's meal-allowance conflict now stays visible under
+  `/v1/conflicts` for the user to review, matching the README's own description of the flow.
+- **T-14 (F-009)** — ✅ `knowledge_index.py::build_index` now also excludes any document with its own
+  `acl_entries` row (regardless of source `default_visibility`) — previously only restricted-*source*
+  claims were excluded, so a document individually ACL-protected on an otherwise-open source still
+  leaked its claims through the index's principal-agnostic fast path.
+- **T-15 (F-020)** — ✅ `/v1/answer` now calls `check_quota(..., "queries")` before running, same as
+  `/v1/retrieve` — previously it only tracked usage after the fact, so an over-quota tenant could
+  switch endpoints to keep querying.
+- **T-16 (F-021)** — ✅ `CohereEmbeddingProvider.embed()` now sends `output_dimension` (fixing the
+  768-vs-1536 dimension mismatch that broke every ingest under `EMBEDDING_PROVIDER=cohere`) and an
+  `input_type` parameter threaded through the whole chain (`EmbeddingProvider` protocol → `Ollama`/
+  `OpenAI` providers accept-and-ignore it → `EmbeddingCache` includes it in the cache key → the one
+  query-embedding call site in `hybrid_search.py` passes `"search_query"` instead of the
+  always-`"search_document"` default).
+- **T-17 (F-015, F-016)** — ✅ Applied `acl_predicate_sql`/`resolve_principal_ids` to
+  `claim_clusters.py` (both endpoints), `versioning.py` (both endpoints), `source_tree.py` (both the
+  source-level aggregation and per-source document listing), and `quality.py`
+  (`get_document_quality`, `list_quality_findings`, and `list_conflicts` — the last using the same
+  "visible on at least one side" policy already established and tested in `structured.py`'s conflict
+  summary, for consistency). `documents.py::delete_document` now requires the caller to be able to
+  *see* the document (same 404-not-403 semantics as `get_document`) before deleting it.
+- **T-18 (F-017)** — ✅ `_resolve_key_row_from_db` (`middleware/auth.py`) no longer swallows
+  exceptions — a DB error during identity lookup now propagates. `resolve_principal_async`
+  (`security/principal.py`) catches it explicitly and raises `HTTPException(503)` instead of falling
+  through to the legacy-tenant-wide-admin branch, which previously silently upgraded a scoped
+  personal key to unfiltered admin access on a transient infrastructure failure.
+
+**Verification:** 34 new tests across 9 new test files (T-10 through T-18 combined), each confirmed to
+fail against the pre-fix code via `git stash` and pass after restoring the fix. Full suite: 366
+passed (up from 256 at audit start), `ruff` and `mypy --strict` clean (mypy scoped to `src/`, matching
+this project's own CI). Live end-to-end re-verification: Ollama-outage degradation, ACL-scoped read
+endpoints, and the full demo flow (load demo data → retrieve → answer, with the conflict now staying
+open for review instead of auto-resolving).
+
+**Not yet done:** Phases D–E (T-19 through T-28) and the Open Questions in §5.
 
 ### Phase D — Connectors & worker
 
