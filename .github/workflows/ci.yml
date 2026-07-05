@@ -60,7 +60,6 @@ jobs:
 
       - name: Mypy (type check)
         run: uv run mypy src/raasoa
-        continue-on-error: true   # advisory until baseline is clean
 
       - name: Run migrations
         run: uv run alembic upgrade head

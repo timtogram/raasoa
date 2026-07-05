@@ -144,10 +144,17 @@ on first ingest, but production deployments should provision proper
 tenants:
 
 ```bash
-curl -X POST https://your-host/v1/tenants/signup \
+curl -X POST https://your-host/v1/tenants \
   -H 'Content-Type: application/json' \
-  -d '{"name": "Acme Corp", "plan": "internal"}'
+  -d '{"name": "Acme Corp", "plan": "free"}'
 ```
+
+> Self-service signup (`POST /v1/tenants`) only accepts `"plan":
+> "free"` — the endpoint returns `400` for any other value ("Self-service
+> signup only supports 'free' plan. Contact sales for paid plans.", see
+> `src/raasoa/api/tenants.py`). To provision a `starter`/`pro`/`enterprise`/
+> `internal` tenant, insert it directly via SQL (below) and set the plan
+> there.
 
 The response contains the new tenant's UUID and a freshly-minted API
 key. Hand the key to the consuming application via `Authorization:
@@ -160,9 +167,26 @@ INSERT INTO tenants (id, name, plan, retention_days, hard_delete_enabled)
 VALUES (gen_random_uuid(), 'Acme Corp', 'internal', 730, true)
 RETURNING id;
 
-INSERT INTO api_keys (tenant_id, key_hash, name)
-VALUES ('<tenant-uuid>', sha256(decode('sk-...', 'escape')), 'bootstrap');
+-- id has a server_default (gen_random_uuid()) so it's optional; it's
+-- included here just to echo it in the same RETURNING-free statement.
+-- key_prefix has no default and must be supplied explicitly. key_hash
+-- must match the hex-string format produced by
+-- Python's hashlib.sha256(key.encode()).hexdigest() (see
+-- raasoa.middleware.auth._hash_key) — encode(digest(..., 'sha256'), 'hex')
+-- returns that same hex string, whereas a raw sha256()/digest() call
+-- alone returns bytea and will never match on login.
+INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix, name)
+VALUES (
+    gen_random_uuid(),
+    '<tenant-uuid>',
+    encode(digest('sk-...', 'sha256'), 'hex'),
+    'sk-...',  -- short, non-secret display prefix, e.g. 'sk-abc12...ef34'
+    'bootstrap'
+);
 ```
+
+> `digest()` requires the `pgcrypto` extension (`CREATE EXTENSION IF NOT
+> EXISTS pgcrypto;`) if it isn't already enabled on your database.
 
 ### 3.5 Pull Ollama models
 
@@ -233,9 +257,13 @@ Soft-deleted documents are purged by the scheduler when:
 
 Run an ad-hoc purge:
 
+> The `scheduler` service pins a hard `entrypoint:` in
+> `docker-compose.yml` (`uv run python -m raasoa.worker.scheduler`), so
+> a plain trailing command is *appended* to that entrypoint instead of
+> replacing it. You must override the entrypoint explicitly:
+
 ```bash
-docker compose run --rm scheduler \
-  uv run python -m raasoa.worker.retention
+docker compose run --rm --entrypoint "uv run python -m raasoa.worker.retention" scheduler
 ```
 
 ### 4.5 Rollback

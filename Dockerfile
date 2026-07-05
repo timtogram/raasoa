@@ -22,9 +22,21 @@ RUN uv sync --frozen --no-dev --extra parsing
 # Copy templates for dashboard
 COPY src/raasoa/templates/ src/raasoa/templates/
 
+# Copy sample documents used by the dashboard's "Load Demo Data" button
+COPY examples/ examples/
+
 # Entrypoint
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
+
+# Run as a non-root user (F-046) — the whole app tree is owned by root
+# up to this point (uv sync, COPY) since that's simplest for build
+# layers; hand it off to an unprivileged user for the actual runtime.
+RUN groupadd --system raasoa \
+    && useradd --system --create-home --home-dir /home/raasoa --gid raasoa raasoa \
+    && chown -R raasoa:raasoa /app
+ENV PYTHONDONTWRITEBYTECODE=1 HOME=/home/raasoa
+USER raasoa
 
 EXPOSE 8000
 

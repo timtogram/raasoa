@@ -2,7 +2,11 @@
 set -e
 
 echo "=== RAASOA Startup ==="
-echo "Database: ${DATABASE_URL:-not set}"
+if [ -n "${DATABASE_URL:-}" ]; then
+    echo "Database: configured (${DATABASE_URL##*@})"
+else
+    echo "Database: not set"
+fi
 echo "Embedding: ${EMBEDDING_PROVIDER:-ollama}"
 
 # Wait for database to be ready
@@ -22,6 +26,15 @@ asyncio.run(check())
     echo "  Attempt $i/30 — waiting..."
     sleep 2
 done
+
+# If the container was invoked with an explicit command (e.g.
+# `docker compose run --rm api alembic upgrade head`), run that instead
+# of the default migrate-then-serve flow. The DB-wait loop above still
+# runs first since most overrides (alembic, shell, etc.) need the DB too.
+if [ "$#" -gt 0 ]; then
+    echo "Running passed-through command: $*"
+    exec "$@"
+fi
 
 echo "Running database migrations..."
 uv run alembic upgrade head
