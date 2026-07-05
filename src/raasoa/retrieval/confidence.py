@@ -11,8 +11,20 @@ class ConfidenceBlock:
     answerable: bool
 
 
-def compute_confidence(results: list[SearchResult]) -> ConfidenceBlock:
-    """Compute confidence metrics from search results."""
+def compute_confidence(
+    results: list[SearchResult], *, max_score: float = 0.033
+) -> ConfidenceBlock:
+    """Compute confidence metrics from search results.
+
+    ``max_score`` is the theoretical maximum of ``result.score`` for
+    whatever produced ``results`` — RRF-scale hybrid search tops out
+    around 1/(60+1) per signal (~0.033, the default), but a reranker's
+    relevance score is already normalized to [0, 1]. Callers MUST pass
+    the reranker's own scale (e.g. ``reranker.SCORE_SCALE``) when
+    results have been reranked — using the RRF default against a [0, 1]
+    score would saturate confidence to ~1.0 unconditionally, silently
+    disabling /v1/answer's min_confidence refusal gate.
+    """
     if not results:
         return ConfidenceBlock(
             retrieval_confidence=0.0,
@@ -25,9 +37,7 @@ def compute_confidence(results: list[SearchResult]) -> ConfidenceBlock:
     unique_docs = len({r.document_id for r in results})
 
     # Heuristic: confidence based on top score and result diversity
-    # RRF scores are typically in [0, 0.033] range (1/(60+1) max per signal)
-    # Max possible with both signals: ~0.033
-    normalized_score = min(top_score / 0.033, 1.0)
+    normalized_score = min(top_score / max_score, 1.0)
 
     # More diverse sources = more confidence
     diversity_bonus = min(unique_docs / 3.0, 1.0) * 0.2

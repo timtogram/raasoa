@@ -7,6 +7,7 @@
 
 import asyncio
 import logging
+from dataclasses import replace
 
 import httpx
 
@@ -30,6 +31,11 @@ Relevance score:"""
 class PassthroughReranker:
     """No-op reranker: returns results as-is."""
 
+    # Confidence scoring needs to know the scale of `.score` to normalize
+    # it — RRF (hybrid_search's own ranking, unchanged by this reranker)
+    # tops out around 1/(60+1) per signal. See raasoa.retrieval.confidence.
+    SCORE_SCALE = 0.033
+
     async def rerank(
         self, query: str, results: list[SearchResult], top_k: int
     ) -> list[SearchResult]:
@@ -38,6 +44,9 @@ class PassthroughReranker:
 
 class CrossEncoderReranker:
     """Reranks using an external reranking provider (e.g. Cohere Rerank)."""
+
+    # Relevance scores from cross-encoder rerankers are already in [0, 1].
+    SCORE_SCALE = 1.0
 
     def __init__(self, provider: RerankProvider) -> None:
         self._provider = provider
@@ -51,22 +60,14 @@ class CrossEncoderReranker:
         documents = [r.chunk_text for r in results]
         scored = await self._provider.rerank(query, documents, top_k)
 
-        reranked: list[SearchResult] = []
-        for sd in scored:
-            original = results[sd.index]
-            reranked.append(
-                SearchResult(
-                    chunk_id=original.chunk_id,
-                    document_id=original.document_id,
-                    chunk_text=original.chunk_text,
-                    section_title=original.section_title,
-                    chunk_type=original.chunk_type,
-                    score=sd.score,
-                    semantic_rank=original.semantic_rank,
-                    lexical_rank=original.lexical_rank,
-                )
-            )
-        return reranked
+        # dataclasses.replace preserves every field of `original`
+        # (document_title, source_url, doc_metadata, etc.) — rebuilding
+        # SearchResult by hand here previously dropped 7 of them, so
+        # every /v1/answer citation and /v1/retrieve hit lost its
+        # provenance under a non-default reranker.
+        return [
+            replace(results[sd.index], score=sd.score) for sd in scored
+        ]
 
 
 class OllamaReranker:
@@ -75,6 +76,9 @@ class OllamaReranker:
     Each candidate is scored with a simple relevance prompt. Results
     are sorted by LLM-assigned relevance score.
     """
+
+    # _score_one always clamps to [0, 1] (or defaults to 0.5 on failure).
+    SCORE_SCALE = 1.0
 
     def __init__(
         self,
@@ -143,16 +147,6 @@ class OllamaReranker:
             reverse=True,
         )
 
-        return [
-            SearchResult(
-                chunk_id=r.chunk_id,
-                document_id=r.document_id,
-                chunk_text=r.chunk_text,
-                section_title=r.section_title,
-                chunk_type=r.chunk_type,
-                score=s,
-                semantic_rank=r.semantic_rank,
-                lexical_rank=r.lexical_rank,
-            )
-            for r, s in scored[:top_k]
-        ]
+        # dataclasses.replace preserves every field (see CrossEncoderReranker
+        # for why rebuilding by hand previously dropped source provenance).
+        return [replace(r, score=s) for r, s in scored[:top_k]]

@@ -184,7 +184,7 @@ async def retrieve(
         search_results = await reranker.rerank(
             request.query, search_results, request.top_k,
         )
-        confidence = compute_confidence(search_results)
+        confidence = compute_confidence(search_results, max_score=reranker.SCORE_SCALE)
 
         results_list = [
             ChunkHit(
@@ -363,7 +363,7 @@ async def answer(
     search_results = await reranker.rerank(
         request.query, search_results, request.top_k,
     )
-    conf = compute_confidence(search_results)
+    conf = compute_confidence(search_results, max_score=reranker.SCORE_SCALE)
     conf_info = ConfidenceInfo(
         retrieval_confidence=conf.retrieval_confidence,
         source_count=conf.source_count,
