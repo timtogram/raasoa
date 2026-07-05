@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from raasoa.connectors.net import UnsafeConnectorUrlError, validate_outbound_url
 from raasoa.db import get_session
 from raasoa.middleware.auth import resolve_tenant_async
 
@@ -211,13 +212,35 @@ async def create_source(
     body: SourceCreate,
     session: AsyncSession = Depends(get_session),
 ) -> SourceResponse:
-    """Create a new data source connection.
+    """Create a new data source connection (admin-only).
 
     By default (auto_index=True) also runs an immediate sync and returns
     a data-quality snapshot — connecting a source and seeing "12 documents
     indexed, 2 already contradict each other" happens in one call.
+
+    Admin-gated because a source's connection config can point outbound
+    requests (e.g. Jira's ``base_url``) at an arbitrary host — see
+    ``raasoa.connectors.net`` — so creating one is a privileged action.
+    Unlike ``raasoa.api.admin.require_admin``, this does NOT also require
+    ``tenants.admin_api_enabled``: that flag opts a tenant into the
+    delegated Admin API (personal keys, groups), a separate concern from
+    a trusted master/legacy key performing a basic tenant operation.
     """
-    tenant_id = await resolve_tenant_async(request)
+    from raasoa.security.principal import resolve_principal_async
+
+    principal = await resolve_principal_async(request)
+    if not (principal.is_legacy_tenant_wide or principal.is_admin):
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    tenant_id = principal.tenant_id
+
+    if body.source_type == "jira":
+        try:
+            validate_outbound_url(
+                (body.config.get("base_url") or "").rstrip("/"),
+                field_name="config.base_url",
+            )
+        except UnsafeConnectorUrlError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     # Quota check: source limit
     from raasoa.middleware.metering import check_quota
@@ -925,6 +948,11 @@ async def _sync_jira(
             "status": "error",
             "message": "Missing Jira config. Required: base_url, email, api_token",
         }
+
+    try:
+        validate_outbound_url(base_url, field_name="base_url")
+    except UnsafeConnectorUrlError as e:
+        return {"status": "error", "message": str(e)}
 
     jql = query if query and query != "*" else default_jql
     fields = config.get("fields") or [
