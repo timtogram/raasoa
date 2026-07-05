@@ -59,7 +59,10 @@ class _DistinctVectorProvider:
     def __init__(self) -> None:
         self._counter = 0
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self, texts: list[str], *, input_type: str = "search_document"
+    ) -> list[list[float]]:
+        del input_type
         vectors = []
         for _ in texts:
             self._counter += 1
