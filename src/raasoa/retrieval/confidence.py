@@ -2,6 +2,10 @@ from dataclasses import dataclass
 
 from raasoa.retrieval.hybrid_search import SearchResult
 
+# A document only counts toward the diversity bonus if its score is at
+# least this fraction of the top result's score -- see compute_confidence.
+_COHERENCE_RATIO = 0.7
+
 
 @dataclass
 class ConfidenceBlock:
@@ -39,8 +43,21 @@ def compute_confidence(
     # Heuristic: confidence based on top score and result diversity
     normalized_score = min(top_score / max_score, 1.0)
 
-    # More diverse sources = more confidence
-    diversity_bonus = min(unique_docs / 3.0, 1.0) * 0.2
+    # More diverse sources = more confidence -- but only counting
+    # documents whose score is close to the top result's. Counting
+    # raw document count regardless of score previously let a handful of
+    # weak, unrelated tail matches (different documents, but nothing to
+    # do with each other or the query) inflate confidence via sheer
+    # document count alone -- exactly the scenario where retrieval
+    # actually found nothing good and is padding out top_k with
+    # whatever was least-bad. A genuinely corroborated answer has
+    # multiple documents scoring close to each other near the top, not
+    # just multiple documents somewhere in the result set.
+    coherence_floor = top_score * _COHERENCE_RATIO
+    corroborating_docs = len(
+        {r.document_id for r in results if r.score >= coherence_floor}
+    )
+    diversity_bonus = min(corroborating_docs / 3.0, 1.0) * 0.2
 
     confidence = min(normalized_score * 0.8 + diversity_bonus, 1.0)
 

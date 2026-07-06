@@ -68,3 +68,41 @@ def test_max_score_normalizes_reranked_scores_correctly() -> None:
     c_strong = compute_confidence(strong_reranked_results, max_score=1.0)
     assert c_strong.retrieval_confidence > 0.7
     assert c_strong.answerable is True
+
+
+def test_diversity_bonus_requires_score_coherence_not_just_document_count() -> None:
+    """F-046 follow-up: the diversity bonus previously counted raw
+    document count regardless of how far below the top score the other
+    results were -- a handful of weak, unrelated tail matches (different
+    documents, but nothing to do with each other or the query) inflated
+    confidence via sheer count alone, exactly when retrieval found
+    nothing good and was padding out top_k with the least-bad leftovers.
+    """
+    top = 0.02
+    # Same top score, but the other 3 results are far below it (< 70%
+    # of top) -- not genuine corroboration, just weak tail matches.
+    incoherent_tail = [
+        _make_result(top),
+        _make_result(top * 0.3),
+        _make_result(top * 0.2),
+        _make_result(top * 0.1),
+    ]
+    c_incoherent = compute_confidence(incoherent_tail)
+
+    # Same top score, but the other 3 results are close to it (>= 70% of
+    # top) -- genuine multi-document corroboration.
+    coherent_cluster = [
+        _make_result(top),
+        _make_result(top * 0.95),
+        _make_result(top * 0.9),
+        _make_result(top * 0.85),
+    ]
+    c_coherent = compute_confidence(coherent_cluster)
+
+    # Both have source_count == 4 (raw diversity is unaffected -- it's
+    # still a useful observability metric) ...
+    assert c_incoherent.source_count == 4
+    assert c_coherent.source_count == 4
+    # ... but only the coherent cluster gets the full diversity bonus,
+    # so it must score meaningfully higher despite an identical top score.
+    assert c_coherent.retrieval_confidence > c_incoherent.retrieval_confidence
