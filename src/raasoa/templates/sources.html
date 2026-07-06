@@ -35,16 +35,23 @@
         </div>
         <p class="text-sm text-gray-600 mb-3">{{ source.doc_count or 0 }} documents synced</p>
 
-        <div id="sync-{{ source.id }}">
-            {% if source.source_type in ['notion', 'sharepoint', 'jira'] %}
-            <button onclick="syncSource('{{ source.id }}')"
-                    class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 transition-colors">
-                Sync Now
+        <div class="flex items-center justify-between">
+            <div id="sync-{{ source.id }}">
+                {% if source.source_type in ['notion', 'sharepoint', 'jira'] %}
+                <button onclick="syncSource('{{ source.id }}')"
+                        class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 transition-colors">
+                    Sync Now
+                </button>
+                {% else %}
+                <span class="text-xs text-gray-400">Push via webhook</span>
+                {% endif %}
+            </div>
+            <button onclick="deleteSource('{{ source.id }}', {{ source.doc_count or 0 }})"
+                    class="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded transition-colors">
+                Delete
             </button>
-            {% else %}
-            <span class="text-xs text-gray-400">Push via webhook</span>
-            {% endif %}
         </div>
+        <p id="delete-msg-{{ source.id }}" class="text-xs text-red-600 mt-2"></p>
     </div>
     {% endfor %}
 </div>
@@ -357,6 +364,28 @@ async function syncSource(sourceId) {
         }
     } catch (err) {
         if (el) el.innerHTML = '<span class="text-sm text-red-600">' + escapeHtml(err.message) + '</span>';
+    }
+}
+
+async function deleteSource(sourceId, docCount) {
+    var msgEl = document.getElementById('delete-msg-' + sourceId);
+    var confirmMsg = docCount > 0
+        ? 'This source has ' + docCount + ' document(s) attached, so the delete will be rejected until those are removed. Try anyway?'
+        : 'Delete this source? This cannot be undone.';
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+        var resp = await fetch('/dashboard/api/sources/' + sourceId, {
+            method: 'DELETE',
+        });
+        var data = await resp.json();
+        if (resp.ok) {
+            window.location.reload();
+        } else if (msgEl) {
+            msgEl.textContent = data.detail || 'Failed to delete source.';
+        }
+    } catch (err) {
+        if (msgEl) msgEl.textContent = err.message;
     }
 }
 </script>

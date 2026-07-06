@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raasoa.connectors.net import UnsafeConnectorUrlError, validate_outbound_url
@@ -449,19 +450,56 @@ async def delete_source(
     source_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    """Delete a data source (does NOT delete its documents)."""
+    """Delete a data source (does NOT delete its documents).
+
+    documents.source_id has no ON DELETE rule, so Postgres refuses the
+    delete outright (and used to surface as a bare 500) if any documents
+    still reference this source. Checked explicitly here for a clear,
+    actionable error instead.
+    """
     tenant_id = await resolve_tenant_async(request)
 
-    result = await session.execute(
+    doc_count_result = await session.execute(
         text(
-            "DELETE FROM sources WHERE id = :sid AND tenant_id = :tid "
-            "RETURNING id"
+            "SELECT count(*) AS n FROM documents "
+            "WHERE source_id = :sid AND tenant_id = :tid"
         ),
         {"sid": source_id, "tid": tenant_id},
     )
-    if not result.first():
-        raise HTTPException(status_code=404, detail="Source not found")
-    await session.commit()
+    doc_count = doc_count_result.scalar_one()
+    if doc_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot delete source: {doc_count} document(s) still "
+                "reference it. Delete those documents first, or use "
+                "PATCH /{source_id}/visibility if you only need to "
+                "change access."
+            ),
+        )
+
+    try:
+        result = await session.execute(
+            text(
+                "DELETE FROM sources WHERE id = :sid AND tenant_id = :tid "
+                "RETURNING id"
+            ),
+            {"sid": source_id, "tid": tenant_id},
+        )
+        if not result.first():
+            raise HTTPException(status_code=404, detail="Source not found")
+        await session.commit()
+    except IntegrityError:
+        # A document was inserted for this source in the window between
+        # the count check above and this delete — rare, but the FK has
+        # no ON DELETE rule so Postgres would otherwise surface this as
+        # an unhandled 500.
+        await session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete source: a document was just added to "
+            "it. Delete its documents first and try again.",
+        ) from None
     return {"status": "deleted", "id": str(source_id)}
 
 

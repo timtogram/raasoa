@@ -553,6 +553,56 @@ async def dashboard_sync_source(
     return JSONResponse(content=stats)
 
 
+@router.delete("/api/sources/{source_id}")
+async def dashboard_delete_source(
+    request: Request,
+    source_id: _uuid_mod.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Delete a data source from the dashboard.
+
+    Mirrors DELETE /v1/sources/{id}'s document-count check — the FK from
+    documents to sources has no ON DELETE rule, so a source with
+    documents must be rejected with a clear message rather than left to
+    surface as an unhandled 500.
+    """
+    if _check_auth(request):
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    tid = DEFAULT_TENANT
+
+    doc_count_result = await session.execute(
+        text(
+            "SELECT count(*) AS n FROM documents "
+            "WHERE source_id = :sid AND tenant_id = :tid"
+        ),
+        {"sid": source_id, "tid": tid},
+    )
+    doc_count = doc_count_result.scalar_one()
+    if doc_count > 0:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": (
+                    f"Cannot delete source: {doc_count} document(s) "
+                    "still reference it. Delete those documents first."
+                ),
+            },
+        )
+
+    result = await session.execute(
+        text(
+            "DELETE FROM sources WHERE id = :sid AND tenant_id = :tid "
+            "RETURNING id"
+        ),
+        {"sid": source_id, "tid": tid},
+    )
+    if not result.first():
+        return JSONResponse(status_code=404, content={"detail": "Source not found"})
+    await session.commit()
+    return JSONResponse(content={"status": "deleted", "id": str(source_id)})
+
+
 # ── Dashboard API: Tenant, Keys, Usage ──────────────────
 
 
