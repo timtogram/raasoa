@@ -831,3 +831,34 @@ bug fix, so it wasn't implemented unprompted:
 
 No code changes made for this section beyond the reranker bug fix, which stands on its own regardless
 of which option (if any) is chosen.
+
+**Decided 2026-07-06: Option B.** `reranker` now defaults to `"ollama"` in `config.py`,
+`docker-compose.yml` (both service blocks), and `.env.example` — every query gets a full LLM
+relevance judgment per candidate chunk, not just an answerability sanity check.
+
+Two gaps found and closed while implementing this:
+- **`get_reranker()` never actually supported `"cohere"`** despite the config comment documenting it
+  as a valid value — any value other than `"ollama"` silently fell through to `passthrough`. Wired in
+  `CrossEncoderReranker(CohereRerankProvider())` for real.
+- **CI has no live Ollama** (only a Postgres service) and several tests exercise `/v1/retrieve`
+  end-to-end without mocking `get_reranker()`, relying on `passthrough`'s previous zero-network-calls
+  default. Added `RERANKER: "passthrough"` to the CI job's `env:` block — the same pattern CI already
+  uses for `AUTH_ENABLED` (diverging from the production default for test speed/determinism, not
+  silently broken). Real deployments always run Ollama already (required for embeddings), so this is
+  CI-only.
+
+**Verified live** (not just unit tests): re-ran the exact empirical queries from the investigation
+above through the running dashboard with the new default active —
+`"Wie hoch ist die Verpflegungspauschale?"` (relevant): confidence 0.933, top score 1.0, answerable.
+`"Was ist die beste Pizza-Sorte in Neapel?"` / `"Wie wird das Wetter morgen in Berlin?"`
+(irrelevant): confidence 0.2, top score 0.0, **not** answerable — confirmed through `/v1/answer`
+too, which now returns an honest refusal (`"retrieval_confidence 0.20 < min_confidence 0.30"`)
+instead of confidently citing an unrelated document. This is the exact failure mode reported at the
+start of Phase G, now closed for real rather than papered over.
+
+**Measured latency cost** (local machine, `qwen3:8b` via Ollama, not a GPU-backed production
+server): retrieval + reranking alone ≈2.5s; the full `/v1/answer` round-trip (adds LLM-based answer
+synthesis, unrelated to this change) ≈5.5s. This is the real tradeoff of Option B — noticeably
+slower than `passthrough`'s near-instant response, in exchange for actually trustworthy confidence
+scores. Full local test suite re-run with the real default active (437 passed, ~20s vs. ~17s with
+`passthrough` — only 2 tests don't mock the reranker and pay the real cost).
