@@ -73,8 +73,10 @@ PDF, DOCX, XLSX, PPTX, CSV, HTML, TXT, Markdown. Tables preserved. Page numbers 
 - **Notion** — native, recursive page-block sync with delta filtering
 - **SharePoint** — native via Microsoft Graph drive delta, folder paths, deletes
 - **Jira** — native via Atlassian Cloud JQL search
-- **Confluence** — webhook-based
-- **Custom** — any system with HTTP access
+- **HubSpot** — native CRM sync with per-owner ACL grants
+- **Anything else** — via `POST /v1/webhooks/ingest`, a generic
+  push-based endpoint any system with HTTP access can call
+  (`document.created`/`updated`/`deleted` events)
 
 ## For AI Agents
 
