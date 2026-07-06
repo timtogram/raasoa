@@ -12,7 +12,7 @@ echo "Embedding: ${EMBEDDING_PROVIDER:-ollama}"
 # Wait for database to be ready
 echo "Waiting for database..."
 for i in $(seq 1 30); do
-    if uv run python -c "
+    if uv run --frozen --no-sync python -c "
 import asyncio, asyncpg, os
 async def check():
     url = os.environ.get('DATABASE_URL', '').replace('+asyncpg', '')
@@ -37,10 +37,10 @@ if [ "$#" -gt 0 ]; then
 fi
 
 echo "Running database migrations..."
-uv run alembic upgrade head
+uv run --frozen --no-sync alembic upgrade head
 
 echo "Starting RAASOA API server..."
-exec uv run uvicorn raasoa.main:app \
+exec uv run --frozen --no-sync uvicorn raasoa.main:app \
     --host 0.0.0.0 \
     --port 8000 \
     --workers "${UVICORN_WORKERS:-1}" \

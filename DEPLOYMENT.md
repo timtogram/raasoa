@@ -66,10 +66,6 @@ OpenAI-compatible endpoint (see `.env.example`).
                 │  ┌─────────┐   ┌────────────────────┐    │
                 │  │scheduler│──▶│      ollama        │    │
                 │  └─────────┘   └────────────────────┘    │
-                │                                           │
-                │  ┌─────────┐                              │
-                │  │  minio  │  (optional artifact store)   │
-                │  └─────────┘                              │
                 └──────────────────────────────────────────┘
 ```
 
@@ -78,7 +74,6 @@ OpenAI-compatible endpoint (see `.env.example`).
   and retention purge loops. Don't run more than one.
 - **postgres** — pgvector-enabled. Owns *all* state.
 - **ollama** — embedding model + chat (Judge / Claim Extractor) model.
-- **minio** — optional. Only used when you keep raw artifacts on S3.
 
 The MCP server (`python -m raasoa.mcp.server`) is **not** part of the
 container stack — it runs on the operator's machine (Claude Desktop,
@@ -88,19 +83,20 @@ Cursor, …) and talks to the API over HTTPS.
 
 ## 3. First-time install
 
-### 3.1 Pull the image
+### 3.1 Build the image
 
-If you have GitHub Container Registry access:
-
-```bash
-docker pull ghcr.io/timtogram/raasoa:latest
-```
-
-Or load the offline tarball produced by `make release`:
+CI does not publish images anywhere (`.github/workflows/ci.yml` builds with
+`push: false` — there is no `ghcr.io/timtogram/raasoa` image to pull).
+Build it yourself:
 
 ```bash
-gunzip -c raasoa-YYYYMMDD.tar.gz | docker load
+docker buildx build --platform linux/amd64 -t raasoa:latest --load .
 ```
+
+To move the image to another machine without a registry, export/import a
+tarball (see §9 "Releasing a new version" below for the exact
+`docker save`/`docker load` commands) instead of relying on a registry
+pull.
 
 ### 3.2 Configure secrets
 
@@ -196,6 +192,46 @@ The `ollama-pull` service does this on first boot. To force a refresh:
 docker compose run --rm ollama-pull
 ```
 
+### 3.6 HubSpot restricted-CRM access — mapping a real person to their owner ID
+
+HubSpot CRM records are ingested with an ACL grant on the synthetic
+principal `hubspot:owner:<hubspot-owner-id>` (see `api/sources.py`'s
+HubSpot sync), so only whoever holds that principal can see that
+record's claims via `/v1/retrieve`, `/v1/answer`, or the MCP tools. There
+is **no automatic link** between a real logged-in person and that
+principal — nothing maps an email address or login to a HubSpot owner ID
+on its own. Without doing the following, the restricted-CRM feature is
+correctly locked down but invisible to everyone, including the person
+it's meant for.
+
+To grant a specific person access to their own HubSpot-owned records,
+mint them a personal API key carrying that principal_id:
+
+```bash
+# One-time per tenant: turn on the admin API (requires the tenant's own
+# master/legacy key — never a personal key).
+curl -X POST https://your-host/v1/admin/enable \
+  -H 'Authorization: Bearer <tenant-master-key>'
+
+# Look up the person's numeric HubSpot Owner ID first (HubSpot UI:
+# Settings -> Objects -> Activities -> Owners, or GET /crm/v3/owners
+# on HubSpot's own API) — it is NOT their RAASOA account or email.
+curl -X POST https://your-host/v1/admin/keys \
+  -H 'Authorization: Bearer <an-admin-capable-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Jane — Sales",
+    "principal_id": "hubspot:owner:12345678",
+    "clearance": "internal"
+  }'
+```
+
+The response's `key` field is the personal API key for that person —
+hand it to them (or wire it into whatever client they use) the same way
+as any other API key. There is currently no bulk/onboarding-sync path;
+each person who needs restricted-CRM access needs one of these calls
+made for them individually as they join.
+
 ---
 
 ## 4. Operations runbook
@@ -210,7 +246,8 @@ docker compose run --rm ollama-pull
 
 ### 4.2 Backups
 
-State lives in two volumes: `pgdata` and (optionally) `miniodata`.
+All state lives in the `pgdata` volume — Postgres is the only stateful
+service.
 
 **Hot backup** (no downtime):
 
