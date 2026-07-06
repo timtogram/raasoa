@@ -936,9 +936,12 @@ async def _sync_sharepoint(
         ]
 
         cursor_map = await _sharepoint_cursor_map(session, source_id)
+        ordered_drives = _rotate_drives(
+            drives, cursor_map.get("__last_first_drive__"),
+        )
 
         if query and query != "*":
-            for drive in drives:
+            for drive in ordered_drives:
                 await _sync_sharepoint_search_drive(
                     session=session,
                     tenant_id=tenant_id,
@@ -956,8 +959,18 @@ async def _sync_sharepoint(
                     break
             return stats
 
-        next_cursor_map: dict[str, str] = {}
-        for drive in drives:
+        # Persist the rotation marker immediately, before any network call,
+        # so it advances on every call regardless of how much of the call
+        # actually completes — this is what guarantees every drive gets
+        # first-in-line budget priority at least once every len(drives)
+        # calls, instead of API-return order permanently starving
+        # non-first drives.
+        cursor_map["__last_first_drive__"] = str(ordered_drives[0]["id"])
+        await _persist_sharepoint_cursor_map(
+            session, source_id, cursor_map, stats["synced"], "running",
+        )
+
+        for drive in ordered_drives:
             if stats["synced"] >= limit:
                 stats["delta_complete"] = False
                 break
@@ -974,30 +987,22 @@ async def _sync_sharepoint(
                 sync_acl=bool(config.get("sync_acl", False)),
                 stats=stats,
             )
+            # Persist THIS drive's advanced cursor immediately, not batched
+            # until every drive in the call finishes — previously the
+            # entire cursor_map was discarded when a later drive hit the
+            # limit (the overwhelmingly common case, since that's the
+            # whole point of a limit), silently re-processing every
+            # already-completed drive's items again on the next sync.
             if delta_link:
-                next_cursor_map[drive["id"]] = delta_link
+                cursor_map[drive["id"]] = delta_link
+                await _persist_sharepoint_cursor_map(
+                    session, source_id, cursor_map, stats["synced"], "running",
+                )
 
-        if stats["delta_complete"] and next_cursor_map:
-            await session.execute(
-                text(
-                    "INSERT INTO sync_cursors "
-                    "(source_type, source_id, delta_token, last_sync_at, "
-                    " sync_status, items_synced) "
-                    "VALUES ('sharepoint', :sid, :token, now(), "
-                    " 'completed', :count) "
-                    "ON CONFLICT (source_type, source_id) "
-                    "DO UPDATE SET delta_token = :token, "
-                    "  last_sync_at = now(), "
-                    "  sync_status = 'completed', "
-                    "  items_synced = :count"
-                ),
-                {
-                    "sid": source_id,
-                    "token": json.dumps(next_cursor_map),
-                    "count": stats["synced"],
-                },
+        if stats["delta_complete"]:
+            await _persist_sharepoint_cursor_map(
+                session, source_id, cursor_map, stats["synced"], "completed",
             )
-            await session.commit()
 
     return stats
 
@@ -1563,6 +1568,65 @@ async def _sharepoint_cursor_map(
     except json.JSONDecodeError:
         pass
     return {"default": str(row.delta_token)}
+
+
+def _rotate_drives(
+    drives: list[dict[str, Any]], last_first_id: str | None,
+) -> list[dict[str, Any]]:
+    """Rotate ``drives`` so a different drive gets first-in-line budget
+    priority each sync call.
+
+    Without this, iterating drives in the same fixed (API-return) order
+    every call means a single busy drive that alone consumes the whole
+    ``limit`` permanently starves every other drive of any budget at
+    all — not just once, but forever, since the order never changes.
+    Rotating guarantees every drive gets to go first at least once every
+    ``len(drives)`` calls.
+    """
+    if not drives or not last_first_id:
+        return drives
+    ids = [str(d["id"]) for d in drives]
+    if last_first_id not in ids:
+        return drives
+    start = (ids.index(last_first_id) + 1) % len(drives)
+    return drives[start:] + drives[:start]
+
+
+async def _persist_sharepoint_cursor_map(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    cursor_map: dict[str, str],
+    items_synced: int,
+    sync_status: str,
+) -> None:
+    """Upsert the full per-drive cursor map (plus the ``__last_first_drive__``
+    rotation marker it may contain) into ``sync_cursors``.
+
+    Called progressively — once per drive as soon as that drive's delta
+    walk completes, not batched until the whole sync call finishes — so a
+    drive's advanced cursor is never lost just because a LATER drive in
+    the same call hit the sync limit.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO sync_cursors "
+            "(source_type, source_id, delta_token, last_sync_at, "
+            " sync_status, items_synced) "
+            "VALUES ('sharepoint', :sid, :token, now(), :status, :count) "
+            "ON CONFLICT (source_type, source_id) "
+            "DO UPDATE SET delta_token = :token, "
+            "  last_sync_at = now(), "
+            "  sync_status = :status, "
+            "  items_synced = :count"
+        ),
+        {
+            "sid": source_id,
+            "token": json.dumps(cursor_map),
+            "status": sync_status,
+            "count": items_synced,
+        },
+    )
+    await session.commit()
 
 
 async def _sync_sharepoint_search_drive(
