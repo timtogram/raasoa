@@ -33,9 +33,23 @@ async def run_retention_cleanup() -> dict[str, int]:
         "feedback_purged": 0,
         "acl_entries_purged": 0,
         "crm_objects_purged": 0,
+        "idempotency_keys_purged": 0,
     }
 
     async with async_session() as session:
+        # Webhook idempotency keys are short-lived by design (they exist
+        # to protect against network-retry duplicate delivery, not to
+        # serve as a permanent audit trail) — purge anything older than
+        # 48h regardless of whether any documents are expired this cycle.
+        idem_result = await session.execute(
+            text(
+                "DELETE FROM webhook_idempotency_keys "
+                "WHERE created_at < now() - interval '48 hours'"
+            )
+        )
+        stats["idempotency_keys_purged"] = idem_result.rowcount or 0  # type: ignore[attr-defined]
+        await session.commit()
+
         # Find expired soft-deleted documents
         result = await session.execute(
             text(

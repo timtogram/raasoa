@@ -18,7 +18,7 @@ from raasoa.models.governance import (
     RetrievalLog,
     ReviewTask,
 )
-from raasoa.models.ops import AuditEvent, QueuedJob
+from raasoa.models.ops import AuditEvent, QueuedJob, WebhookIdempotencyKey
 from raasoa.models.principals import PrincipalGroup, PrincipalMembership, SourceAclGrant
 from raasoa.models.saas import ApiKey, UsageEvent
 from raasoa.models.source import Source, SyncCursor
@@ -52,4 +52,5 @@ __all__ = [
     "SyncCursor",
     "Tenant",
     "UsageEvent",
+    "WebhookIdempotencyKey",
 ]

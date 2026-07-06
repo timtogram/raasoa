@@ -5,7 +5,9 @@ Webhooks are authenticated via:
   - Shared secret (X-Webhook-Secret header, configured via WEBHOOK_SECRET env)
 """
 
+import json
 import logging
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -41,7 +43,14 @@ class WebhookPayload(BaseModel):
     source_url: str | None = None
     idempotency_key: str | None = Field(
         default=None,
-        description="Unique key to prevent duplicate processing on retries.",
+        description=(
+            "Unique key to prevent duplicate processing on retries. A "
+            "second delivery with the same key returns the exact cached "
+            "response from the first successful/rejected delivery without "
+            "reprocessing. Not honored across a transient failure (500) — "
+            "retry with the same key to actually retry. Cached entries "
+            "expire after 48h."
+        ),
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -51,6 +60,59 @@ class WebhookResponse(BaseModel):
     event: str
     document_id: str | None = None
     message: str
+
+
+async def _cached_idempotent_response(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    idempotency_key: str,
+) -> WebhookResponse | None:
+    """Look up a previously-cached terminal response for this key.
+
+    Returns None on a cache miss (first delivery, or the key expired and
+    was purged — a retry old enough to miss the cache just reprocesses,
+    which is safe since idempotency keys only protect against
+    close-in-time network retries, not indefinite dedup).
+    """
+    result = await session.execute(
+        text(
+            "SELECT response_json FROM webhook_idempotency_keys "
+            "WHERE tenant_id = :tid AND idempotency_key = :key"
+        ),
+        {"tid": tenant_id, "key": idempotency_key},
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return WebhookResponse(**row.response_json)
+
+
+async def _cache_idempotent_response(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    idempotency_key: str,
+    response: WebhookResponse,
+) -> None:
+    """Cache a terminal, deterministic response for this idempotency key.
+
+    Only call this for outcomes that are safe to replay verbatim on a
+    retry (success, or a deterministic rejection) — never for a transient
+    failure, which must remain retryable with the same key.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO webhook_idempotency_keys "
+            "(tenant_id, idempotency_key, response_json) "
+            "VALUES (:tid, :key, CAST(:resp AS jsonb)) "
+            "ON CONFLICT (tenant_id, idempotency_key) DO NOTHING"
+        ),
+        {
+            "tid": tenant_id,
+            "key": idempotency_key,
+            "resp": json.dumps(response.model_dump()),
+        },
+    )
+    await session.commit()
 
 
 @router.post("/ingest", response_model=WebhookResponse)
@@ -75,6 +137,15 @@ async def webhook_ingest(
             tenant_id = DEFAULT_TENANT
     else:
         tenant_id = await resolve_tenant_async(request)
+
+    # Idempotency: a cached hit short-circuits ALL processing below,
+    # including source lookup/creation.
+    if payload.idempotency_key:
+        cached = await _cached_idempotent_response(
+            session, tenant_id, payload.idempotency_key,
+        )
+        if cached is not None:
+            return cached
 
     # Ensure source exists
     # Ensure tenant exists (auto-create for webhook flows)
@@ -113,11 +184,16 @@ async def webhook_ingest(
             title=payload.title,
         )
         if not validation.valid:
-            return WebhookResponse(
+            response = WebhookResponse(
                 status="rejected",
                 event=payload.event,
                 message=f"Data contract violated: {validation.reason}",
             )
+            if payload.idempotency_key:
+                await _cache_idempotent_response(
+                    session, tenant_id, payload.idempotency_key, response,
+                )
+            return response
 
     if payload.event == "document.deleted":
         from raasoa.api.sources import _cascade_delete_document_data
@@ -144,11 +220,16 @@ async def webhook_ingest(
         # for defense-in-depth even though they FK-cascade on hard delete.
         await _cascade_delete_document_data(session, deleted_doc_ids)
         await session.commit()
-        return WebhookResponse(
+        response = WebhookResponse(
             status="processed",
             event=payload.event,
             message=f"Deletion processed ({len(deleted_doc_ids)} affected)",
         )
+        if payload.idempotency_key:
+            await _cache_idempotent_response(
+                session, tenant_id, payload.idempotency_key, response,
+            )
+        return response
 
     if payload.event in ("document.created", "document.updated"):
         if not payload.content:
@@ -179,7 +260,7 @@ async def webhook_ingest(
             )
             await session.refresh(doc)
 
-            return WebhookResponse(
+            response = WebhookResponse(
                 status="processed",
                 event=payload.event,
                 document_id=str(doc.id),
@@ -188,7 +269,15 @@ async def webhook_ingest(
                     f"quality={doc.quality_score or 'N/A'}"
                 ),
             )
+            if payload.idempotency_key:
+                await _cache_idempotent_response(
+                    session, tenant_id, payload.idempotency_key, response,
+                )
+            return response
         except Exception:
+            # Deliberately NOT cached: a transient failure (e.g. an
+            # embedding provider outage) must remain retryable with the
+            # same idempotency_key, not get permanently locked in.
             logger.exception(
                 "Webhook ingestion failed for %s",
                 payload.source_object_id,

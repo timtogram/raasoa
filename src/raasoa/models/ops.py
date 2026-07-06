@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, Integer, Text, func, text
+from sqlalchemy import DateTime, Index, Integer, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -56,3 +56,27 @@ class QueuedJob(UUIDMixin, Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WebhookIdempotencyKey(UUIDMixin, Base):
+    """Cached terminal response per (tenant_id, idempotency_key) so a
+    retried webhook delivery short-circuits instead of reprocessing — see
+    alembic r8e9f0a1b2c3. Rows are short-lived by design (purged after 48h
+    by ``raasoa.worker.retention.run_retention_cleanup``); this is a
+    network-retry dedup cache, not a permanent audit trail."""
+
+    __tablename__ = "webhook_idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "idempotency_key",
+            name="uq_webhook_idempotency_tenant_key",
+        ),
+        Index("ix_webhook_idempotency_created_at", "created_at"),
+    )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    response_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
