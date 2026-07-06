@@ -58,7 +58,34 @@ class CrossEncoderReranker:
             return []
 
         documents = [r.chunk_text for r in results]
-        scored = await self._provider.rerank(query, documents, top_k)
+        try:
+            scored = await self._provider.rerank(query, documents, top_k)
+        except Exception:
+            # A rerank-provider outage (e.g. Cohere API down/rate-limited)
+            # must degrade to unreranked results, not 500 /v1/retrieve or
+            # /v1/answer — reranking is an enhancement on top of hybrid
+            # search's own ranking, not something retrieval depends on to
+            # function at all (unlike embeddings, where an outage means
+            # honest refusal). Matches OllamaReranker's per-item
+            # resilience, just at the whole-batch granularity since
+            # cross-encoder providers score in one call.
+            #
+            # Score is set to a neutral 0.5 (not the original RRF-scale
+            # score) because SCORE_SCALE=1.0 is a fixed class attribute
+            # read by the caller's compute_confidence() independently of
+            # this call — returning an RRF-scale score (~0.033 max) under
+            # a 1.0-scale assumption would silently under-report
+            # confidence by ~30x instead of giving an honest "degraded,
+            # moderate confidence" signal. Order is preserved (a stable
+            # sort of all-equal scores keeps hybrid search's own ranking)
+            # so this is otherwise identical to PassthroughReranker.
+            logger.warning(
+                "Rerank provider %s failed; falling back to unreranked "
+                "results",
+                type(self._provider).__name__,
+                exc_info=True,
+            )
+            return [replace(r, score=0.5) for r in results[:top_k]]
 
         # dataclasses.replace preserves every field of `original`
         # (document_title, source_url, doc_metadata, etc.) — rebuilding
@@ -91,9 +118,21 @@ class OllamaReranker:
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def _score_one(
-        self, client: httpx.AsyncClient, query: str, passage: str
+        self,
+        client: httpx.AsyncClient,
+        query: str,
+        passage: str,
+        failures: list[int],
     ) -> float:
-        """Score a single query-passage pair."""
+        """Score a single query-passage pair.
+
+        ``failures`` is a shared list used as a mutable counter — every
+        exception appends one entry so ``rerank()`` can tell, after all
+        items finish, whether this was an isolated glitch (fine to stay
+        at debug level, per-item detail matters less) or the whole
+        service is down (worth a single aggregate warning instead of one
+        debug line per item that operators would never see at INFO+).
+        """
         async with self._semaphore:
             try:
                 prompt = RERANK_PROMPT.format(
@@ -125,6 +164,7 @@ class OllamaReranker:
                 logger.debug(
                     "Ollama rerank scoring failed", exc_info=True
                 )
+                failures.append(1)
                 return 0.5
 
     async def rerank(
@@ -133,12 +173,26 @@ class OllamaReranker:
         if not results:
             return []
 
+        failures: list[int] = []
         async with httpx.AsyncClient(timeout=30.0) as client:
             tasks = [
-                self._score_one(client, query, r.chunk_text)
+                self._score_one(client, query, r.chunk_text, failures)
                 for r in results
             ]
             scores = await asyncio.gather(*tasks)
+
+        if failures:
+            # Individual scoring failures already degrade gracefully to a
+            # neutral 0.5 (see _score_one), so this never breaks the
+            # request — but if the Ollama reranker is entirely down, every
+            # item silently getting the same neutral score would
+            # otherwise be invisible at any log level operators actually
+            # watch in production.
+            logger.warning(
+                "Ollama reranker: %d/%d items failed scoring and fell "
+                "back to a neutral score",
+                len(failures), len(results),
+            )
 
         # Pair results with scores and sort
         scored = sorted(

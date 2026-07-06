@@ -1,5 +1,6 @@
 """Tests for reranker strategies."""
 
+import logging
 import uuid
 
 import httpx
@@ -121,3 +122,76 @@ async def test_ollama_reranker_preserves_all_fields(
     assert r.source_url == original.source_url
     assert r.doc_metadata == original.doc_metadata
     assert r.score == 0.75
+
+
+class _FailingRerankProvider:
+    """Simulates a total provider outage (e.g. Cohere API down/rate
+    limited) — CohereRerankProvider.rerank() has zero error handling of
+    its own, so httpx.raise_for_status()/network errors propagate
+    straight out of it exactly like this."""
+
+    async def rerank(
+        self, query: str, documents: list[str], top_k: int,
+    ) -> list[ScoredDocument]:
+        raise httpx.ConnectError("connection refused")
+
+
+@pytest.mark.asyncio
+async def test_cross_encoder_reranker_survives_provider_outage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """F-046: a rerank-provider outage must degrade to unreranked results
+    (preserving hybrid search's own order and every field), not 500
+    /v1/retrieve or /v1/answer."""
+    reranker = CrossEncoderReranker(_FailingRerankProvider())
+    results = [_make_result(0.9), _make_result(0.8), _make_result(0.7)]
+
+    with caplog.at_level(logging.WARNING):
+        reranked = await reranker.rerank("query", results, top_k=2)
+
+    assert len(reranked) == 2
+    # Order preserved (hybrid search's own ranking, top_k truncated).
+    assert reranked[0].chunk_id == results[0].chunk_id
+    assert reranked[1].chunk_id == results[1].chunk_id
+    # Neutral score on the SCORE_SCALE=1.0 scale, not the original
+    # ~0.033-scale RRF score, or confidence math would silently
+    # under-report by ~30x.
+    assert reranked[0].score == 0.5
+    assert reranked[1].score == 0.5
+    # All other fields preserved (dataclasses.replace, not a manual
+    # rebuild).
+    assert reranked[0].document_title == results[0].document_title
+    assert reranked[0].doc_metadata == results[0].doc_metadata
+    assert any("Rerank provider" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_ollama_reranker_survives_total_outage(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """F-046: OllamaReranker already degraded per-item to a neutral score
+    on failure, but only logged at debug — invisible in production. A
+    total outage must now also produce a visible aggregate warning."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def _factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = transport  # type: ignore[assignment]
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", _factory)
+
+    reranker = OllamaReranker(base_url="http://ollama.test", model="qwen3:8b")
+    results = [_make_result(0.9), _make_result(0.8)]
+
+    with caplog.at_level(logging.WARNING):
+        reranked = await reranker.rerank("query", results, top_k=2)
+
+    assert len(reranked) == 2
+    assert all(r.score == 0.5 for r in reranked)
+    assert any(
+        "2/2 items failed" in r.message for r in caplog.records
+    )
