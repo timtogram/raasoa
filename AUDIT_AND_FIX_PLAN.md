@@ -763,3 +763,71 @@ Sources page and a search result that didn't look right.
 **Full verification**: 435 tests passed, `ruff` and `mypy` both clean. Live re-verification via
 browser preview tools: source deletion (both the rejection and success paths), and the 2 new example
 queries retrieving topically correct content.
+
+---
+
+## 8. Deep-dive: does RRF/embedding confidence have a reliable "nothing matches" floor?
+
+Follow-up to Phase G's T-37 fix, which explicitly stopped short of claiming to solve the deeper
+issue: RRF-based confidence has no absolute-relevance floor, so "no matching document exists" and "a
+moderately-matching document exists" can look statistically similar. Investigated empirically instead
+of guessing at a threshold.
+
+**Measurement 1 — raw cosine similarity, real embedding model, real demo corpus** (`ollama` /
+`nomic-embed-text`, 768-dim, live Ollama, live pgvector): embedded several genuinely relevant queries
+and several genuinely irrelevant ones (including nonsense controls — "beste Pizza-Sorte in Neapel",
+"Wetter morgen in Berlin") and measured top-1 cosine similarity against all 4 real demo chunks.
+
+**Result: no reliable separation exists.** A completely unrelated control query ("Pizza in Neapel",
+sim=0.666) scored a *higher* top similarity than a genuinely relevant, on-topic query
+("Verpflegungspauschale", sim=0.639). "Cloud-Kosten" (irrelevant) scored 0.706, also higher than the
+relevant query. Only one irrelevant query ("remote work policy", a short English phrase) showed
+markedly lower similarity (~0.28–0.34) — not a general pattern, likely specific to that phrase's
+structure. **Conclusion: an absolute cosine-similarity threshold would misclassify at least as often
+as it helps with this embedding model on this corpus — not implemented, since there is no principled
+threshold to pick.** This is consistent with known anisotropy/isotropy issues in smaller embedding
+models: cosine similarity between arbitrary text pairs is compressed into a narrower band than the
+"semantically meaningful similarity" intuition assumes.
+
+**Measurement 2 — LLM-based reranker (`OllamaReranker`, qwen3:8b) relevance judgments** on the exact
+same query/chunk pairs: **clean separation** — 1.000 for the genuinely relevant pair, 0.000 for every
+irrelevant pair (relevant query vs. wrong-topic chunk, and every nonsense-control query vs. either
+chunk). Night-and-day difference from raw cosine similarity.
+
+**A real, independent bug was found and fixed while running this measurement**: the *first* run of
+this test returned 0.500 (the failure fallback) for every single pair — `OllamaReranker` was
+completely non-functional with `qwen3:8b`, silently returning neutral scores 100% of the time. Root
+cause: `qwen3` is a reasoning model that emits an internal `<think>...</think>` block before its
+answer; the code relied on a `"/no_think"` prompt-prefix hack to suppress this, but the Ollama version
+in use returns reasoning in a separate top-level `"thinking"` JSON field rather than inlining it into
+`"response"` — so thinking was never suppressed and silently consumed the entire `num_predict=16`
+token budget, leaving `"response"` empty on every call. This exact failure mode (a 200 response with
+no parseable number) also wasn't counted by the aggregate-failure warning added in the prior
+outage-hardening pass, since it isn't an exception. **Fixed**: pass Ollama's documented `"think":
+false` API field instead of the prompt hack, and count an unparseable response as a tracked failure.
+Verified live (response goes from `""` using all 16 tokens on invisible reasoning, to a directly
+parseable `"0"` using 2) and with 2 new regression tests, both confirmed via `git stash` to fail
+against the pre-fix code.
+
+**Recommendation for the owner:** a genuine absolute-relevance floor for the answerability gate is
+achievable, but requires the LLM-based reranker to actually run on every query (or at least on the
+top-1 result, as a cheap "is this really relevant" sanity check before answering) — raw
+embedding/RRF confidence cannot do this reliably with the current embedding model, no matter how the
+diversity-bonus or normalization math is tuned. This is a real product/cost/latency tradeoff, not a
+bug fix, so it wasn't implemented unprompted:
+
+- **Option A — gate only, keep ranking as-is.** Keep `passthrough` as the reranker for ordering
+  results (fast, cheap), but always run one extra reranker call on the top-1 result specifically to
+  override `answerable` if the LLM judges it irrelevant. Adds one LLM call's latency to every query
+  (not per-chunk), smallest behavior change.
+- **Option B — make `ollama` the default reranker.** Every query gets full LLM-based reranking, not
+  just an answerability sanity check. Better ranking quality across the board, but adds one LLM call
+  *per candidate chunk* per query (real latency/cost increase, and depends on the configured chat
+  model being pulled and reasonably fast on the deployment's hardware).
+- **Option C — leave as a documented, known limitation.** The diversity-bonus fix (T-37) already
+  closed the most direct inflation path; a full relevance floor is a larger change that may not be
+  worth the added latency/infra dependency until real usage data shows it's actually a problem in
+  practice.
+
+No code changes made for this section beyond the reranker bug fix, which stands on its own regardless
+of which option (if any) is chosen.
