@@ -17,25 +17,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  minio:
-    image: minio/minio:latest
-    platform: linux/amd64
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-raasoa}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-raasoa_dev}
-    command: server /data --console-address ":9001"
-    volumes:
-      - miniodata:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   ollama:
     image: ollama/ollama:latest
     platform: linux/amd64
@@ -89,10 +70,6 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raasoa}:${POSTGRES_PASSWORD:-raasoa_dev}@postgres:5432/${POSTGRES_DB:-raasoa}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-20}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-30}
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-raasoa}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-raasoa_dev}
-      S3_BUCKET: ${S3_BUCKET:-raasoa-artifacts}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
@@ -112,7 +89,7 @@ services:
       CONFLICT_OVERLAP_THRESHOLD: ${CONFLICT_OVERLAP_THRESHOLD:-0.3}
       CLAIM_EXTRACTION_ENABLED: ${CLAIM_EXTRACTION_ENABLED:-true}
       CLAIM_EXTRACTION_PASSES: ${CLAIM_EXTRACTION_PASSES:-1}
-      LLM_JUDGE_ENABLED: ${LLM_JUDGE_ENABLED:-false}
+      LLM_JUDGE_ENABLED: ${LLM_JUDGE_ENABLED:-true}
       LLM_JUDGE_AUTO_RESOLVE_THRESHOLD: ${LLM_JUDGE_AUTO_RESOLVE_THRESHOLD:-0.85}
       LLM_JUDGE_MODEL: ${LLM_JUDGE_MODEL:-}
       RERANKER: ${RERANKER:-passthrough}
@@ -152,10 +129,6 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raasoa}:${POSTGRES_PASSWORD:-raasoa_dev}@postgres:5432/${POSTGRES_DB:-raasoa}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-20}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-30}
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-raasoa}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-raasoa_dev}
-      S3_BUCKET: ${S3_BUCKET:-raasoa-artifacts}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
@@ -175,7 +148,7 @@ services:
       CONFLICT_OVERLAP_THRESHOLD: ${CONFLICT_OVERLAP_THRESHOLD:-0.3}
       CLAIM_EXTRACTION_ENABLED: ${CLAIM_EXTRACTION_ENABLED:-true}
       CLAIM_EXTRACTION_PASSES: ${CLAIM_EXTRACTION_PASSES:-1}
-      LLM_JUDGE_ENABLED: ${LLM_JUDGE_ENABLED:-false}
+      LLM_JUDGE_ENABLED: ${LLM_JUDGE_ENABLED:-true}
       LLM_JUDGE_AUTO_RESOLVE_THRESHOLD: ${LLM_JUDGE_AUTO_RESOLVE_THRESHOLD:-0.85}
       LLM_JUDGE_MODEL: ${LLM_JUDGE_MODEL:-}
       RERANKER: ${RERANKER:-passthrough}
@@ -195,5 +168,4 @@ services:
 
 volumes:
   pgdata:
-  miniodata:
   ollama_data:

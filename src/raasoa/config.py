@@ -9,12 +9,6 @@ class Settings(BaseSettings):
     db_pool_size: int = 20
     db_max_overflow: int = 30
 
-    # Object Storage
-    s3_endpoint_url: str = "http://localhost:9000"
-    s3_access_key: str = "raasoa"
-    s3_secret_key: str = "raasoa_dev"
-    s3_bucket: str = "raasoa-artifacts"
-
     # Embedding Provider
     #
     # embedding_dimensions MUST match the actual, fixed width of the
