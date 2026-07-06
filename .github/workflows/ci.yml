@@ -36,6 +36,11 @@ jobs:
       EMBEDDING_PROVIDER: ollama
       EMBEDDING_DIMENSIONS: 768
       AUTH_ENABLED: "false"
+      # The "ollama" reranker default requires a live Ollama chat model,
+      # which this job doesn't run (tests mock the embedding/rerank
+      # providers instead). Override to the network-free default here,
+      # same reasoning as AUTH_ENABLED above.
+      RERANKER: "passthrough"
 
     steps:
       - uses: actions/checkout@v5

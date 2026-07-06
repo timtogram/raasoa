@@ -78,8 +78,19 @@ class Settings(BaseSettings):
     llm_judge_auto_resolve_threshold: float = 0.85
     llm_judge_model: str = ""  # Empty = use ollama_chat_model
 
-    # Reranking
-    reranker: str = "passthrough"  # passthrough | ollama | cohere
+    # Reranking: ollama runs a full LLM relevance judgment per candidate
+    # chunk on every query -- real latency/cost per query, but raw
+    # RRF/embedding confidence alone cannot reliably tell "no matching
+    # document exists" apart from "a moderately-matching document
+    # exists" (measured empirically: a nonsense control query scored
+    # higher cosine similarity than a genuinely relevant one against
+    # this embedding model -- see AUDIT_AND_FIX_PLAN.md #8). Requires
+    # the configured ollama_chat_model to be pulled and reachable,
+    # which docker-compose.yml's ollama-pull service already does by
+    # default since it's also used for claim extraction / the LLM
+    # judge. Set to "passthrough" to skip reranking entirely (fastest,
+    # no extra LLM calls) or "cohere" to use Cohere Rerank instead.
+    reranker: str = "ollama"  # passthrough | ollama | cohere
 
     # Rate Limiting
     ingest_rate_limit_per_minute: int = 30
