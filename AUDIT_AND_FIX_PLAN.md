@@ -728,3 +728,38 @@ worked out, not a general judgment against the tool.
 pre-existing DB-reachability skips, `ruff` and `mypy` both clean. Live re-verification: the full
 Docker build + network-isolated startup flow (T-30), the documented HubSpot admin-key flow (T-31),
 and the full demo (load data → search → conflicts) via the browser preview tools.
+
+---
+
+## 7. Phase G — User-reported issues from live dashboard use — ✅ DONE (2026-07-06)
+
+Triggered by the owner testing the actual dashboard (not the audit process): a screenshot of the
+Sources page and a search result that didn't look right.
+
+- **T-36** — `DELETE /v1/sources/{id}` had no ON DELETE rule on `documents.source_id`; deleting a
+  source with any documents crashed with an unhandled `IntegrityError` (bare 500). Fixed with an
+  explicit document-count check (400 with a clear message) plus a defensive catch for the residual
+  race window. The dashboard also had zero delete/edit affordances for sources despite the backend
+  endpoint existing — added a Delete button per source card. **Verified live**: clicking Delete on a
+  source with documents shows the rejection message and leaves the source intact; deleting an
+  empty source actually removes it.
+- **T-37** — `compute_confidence()`'s diversity bonus counted raw document count in the result set
+  regardless of score coherence, letting a handful of weak, unrelated tail matches inflate confidence
+  via sheer count alone — exactly when retrieval found nothing good. Now only documents scoring
+  within 70% of the top result count toward the bonus.
+- **T-38** — 3 of the 5 "Try these examples" queries on the search page referenced content that
+  doesn't exist anywhere in the demo dataset (data visualization tools, remote work policy, cloud
+  costs), making retrieval look broken for anyone who clicked them. Replaced with 3 verified-working
+  queries, one of which showcases the conflict-detection feature (the 2024 vs. 2026 travel policy
+  versions).
+- **Root cause of the specific reported bad result**: not a retrieval bug at all — a single stray
+  `retrieval_feedback` row left over from testing earlier in this session (`query_text: "Hotel"`) was
+  giving one chunk a small but decisive boost across *all* queries, not just Hotel-related ones,
+  since query-specific feedback scoping was never implemented (a known, documented Phase C
+  trade-off). Deleted the stray row; also did a full cleanup pass removing ~24 accumulated test
+  sources/documents from the shared dev database that had built up over this session's testing,
+  keeping only the real demo dataset (4 documents under one `File Upload` source).
+
+**Full verification**: 435 tests passed, `ruff` and `mypy` both clean. Live re-verification via
+browser preview tools: source deletion (both the rejection and success paths), and the 2 new example
+queries retrieving topically correct content.
