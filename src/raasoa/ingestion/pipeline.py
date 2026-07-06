@@ -342,21 +342,26 @@ async def ingest_file(
             await session.rollback()  # Clean up failed transaction
 
     # 14. LLM Judge: auto-resolve high-confidence conflicts
-    if (
-        settings.llm_judge_enabled
-        and settings.conflict_detection_enabled
-        and doc.conflict_status == "conflicts_detected"
-    ):
+    if settings.llm_judge_enabled and settings.conflict_detection_enabled:
         try:
-            from raasoa.quality.judge import auto_resolve_conflicts
+            # detect_claim_conflicts sets conflict_status via a raw SQL
+            # UPDATE (claim_conflicts.py), not through this ORM object,
+            # and the commits above expire doc's attributes — accessing
+            # an expired attribute triggers an implicit lazy-reload,
+            # which isn't supported under AsyncSession (raises
+            # MissingGreenlet) and would 500 every ingest that reaches
+            # here. Refresh explicitly first.
+            await session.refresh(doc)
+            if doc.conflict_status == "conflicts_detected":
+                from raasoa.quality.judge import auto_resolve_conflicts
 
-            judge_stats = await auto_resolve_conflicts(session, tenant_id)
-            if judge_stats.get("auto_resolved", 0) > 0:
-                import logging
-                logging.getLogger(__name__).info(
-                    "LLM Judge auto-resolved %d conflicts for doc %s",
-                    judge_stats["auto_resolved"], doc.id,
-                )
+                judge_stats = await auto_resolve_conflicts(session, tenant_id)
+                if judge_stats.get("auto_resolved", 0) > 0:
+                    import logging
+                    logging.getLogger(__name__).info(
+                        "LLM Judge auto-resolved %d conflicts for doc %s",
+                        judge_stats["auto_resolved"], doc.id,
+                    )
         except Exception:
             pass  # Judge is best-effort
 

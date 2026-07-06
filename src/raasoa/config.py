@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # during ingestion; judge_conflict() (get a recommendation without
     # resolving) and the manual /v1/conflicts/{id}/resolve endpoint work
     # regardless of this setting.
-    llm_judge_enabled: bool = False
+    llm_judge_enabled: bool = True
     llm_judge_auto_resolve_threshold: float = 0.85
     llm_judge_model: str = ""  # Empty = use ollama_chat_model
 
