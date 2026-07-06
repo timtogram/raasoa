@@ -334,12 +334,37 @@ above, and the Open Questions in §5. *(Update: Phase C is now also done — see
   row from before this fix (no claim ids in `details`) is left for human review rather than falling
   back to the old whole-document behavior; (4) `conflicts.py`'s semantic-contradiction pass now skips
   chunks whose `content_hash` matches the current chunk's own hash (identical text is a duplicate,
-  never a "contradiction"). Additionally, `settings.llm_judge_enabled` now defaults to `false`
+  never a "contradiction"). Additionally, `settings.llm_judge_enabled` defaulted to `false`
   (`config.py`, `.env.example`, both `docker-compose.yml` service blocks) — unattended, permanent
-  claim supersession now requires an explicit opt-in. Verified this doesn't break the demo: `/v1/answer`
+  claim supersession required an explicit opt-in. **Reversed 2026-07-06 per product decision**: the
+  owner chose automatic conflict resolution by default (open question #2 in §5), so
+  `llm_judge_enabled` now defaults to `true` in all three places — every ingest with a
+  `conflicts_detected` document runs `auto_resolve_conflicts` unattended, best-effort
+  (`try/except: pass`), superseding claims above `LLM_JUDGE_AUTO_RESOLVE_THRESHOLD` (0.85 default) and
+  leaving everything below it for human review as before. The mechanism itself (subject-match
+  requirement, per-claim scoping, duplicate-hash exclusion) is unchanged — only the default toggle
+  flipped. Verified this doesn't break the demo: `/v1/answer`
   still correctly cites the newer document via RAG ranking regardless of claim-supersession state
   (confirmed live before and after), and the demo's meal-allowance conflict now stays visible under
   `/v1/conflicts` for the user to review, matching the README's own description of the flow.
+  **A serious latent bug surfaced immediately on flipping the default** — because
+  `settings.llm_judge_enabled and settings.conflict_detection_enabled and doc.conflict_status ==
+  "conflicts_detected"` short-circuits on the first condition, `doc.conflict_status` was NEVER
+  evaluated while the setting defaulted to `False`, so this bug was completely dormant since T-13
+  landed. `detect_claim_conflicts` sets `conflict_status` via a raw SQL `UPDATE` (bypassing the ORM
+  identity map), and the several `session.commit()` calls earlier in `ingest_file` expire `doc`'s
+  attributes by SQLAlchemy default — reading an expired attribute triggers an implicit lazy-reload,
+  which isn't supported under `AsyncSession` and raises `sqlalchemy.exc.MissingGreenlet`. With the
+  default flipped to `true`, this would have 500'd every single ingest that reached this line — i.e.
+  most real ingests with `conflict_detection_enabled` on. Caught immediately because the full test
+  suite was re-run after the flip (`tests/test_api/test_ingestion.py` and
+  `tests/test_api/test_webhook_idempotency.py` both failed with this exact error) rather than trusting
+  the config change in isolation. Fixed in `pipeline.py` by adding an explicit `await
+  session.refresh(doc)` before reading `conflict_status`, inside the same best-effort `try/except`.
+  New regression test `tests/test_ingestion/test_llm_judge_pipeline_integration.py` reproduces the
+  exact scenario (mocking claim extraction/conflict-detection/judge to avoid needing a real LLM call)
+  and, via `git stash`, was confirmed to fail with the identical `MissingGreenlet` traceback against
+  the pre-fix code.
 - **T-14 (F-009)** — ✅ `knowledge_index.py::build_index` now also excludes any document with its own
   `acl_entries` row (regardless of source `default_visibility`) — previously only restricted-*source*
   claims were excluded, so a document individually ACL-protected on an otherwise-open source still
@@ -587,19 +612,119 @@ failed, `ruff` and `mypy` both clean.
 
 ---
 
-## 5. Open Questions for the Owner
+## 5. Open Questions for the Owner — answered 2026-07-06
 
-1. **Deployment model** — single-tenant self-hosted (dashboard's hard-coded `DEFAULT_TENANT` is fine)
-   or multi-tenant SaaS (dashboard must become tenant-aware, `AUTH_ENABLED=false` defaults must go)?
-   Changes T-02/T-03 scope.
-2. **Auto-resolution policy (F-013)** — should contradiction auto-resolution ever run unattended on
-   ingest, or always route to human review? Recommendation: opt-in / off-by-default.
-3. **HubSpot owner ACL (F-036)** — how is a logged-in user linked to their `hubspot:owner:<id>`?
-   Manual membership or an onboarding sync? Without it the restricted-CRM feature hides everything
-   from everyone.
-4. **S3/MinIO (F-042)** — planned feature (wire it up) or dead scaffolding (remove boto3 + MinIO
-   service + config)?
-5. **Connector completeness** — README lists Confluence and "Custom"; only a generic webhook exists.
-   Advertise-as-webhook-only, or implement?
-6. **Reranker default** — `passthrough` is the config default and the confidence math assumes it. Is
-   `ollama`/`cohere` reranking a supported prod config (then T-12 is required) or experimental?
+1. **Deployment model** — **Decided: single-tenant self-hosted.** Dashboard's hard-coded
+   `DEFAULT_TENANT` and `AUTH_ENABLED=false` defaults are acceptable as-is; no T-02/T-03-scope changes
+   needed.
+2. **Auto-resolution policy (F-013)** — **Decided: run unattended on ingest** (reversing the audit's
+   opt-in recommendation). `llm_judge_enabled` now defaults to `true` — see the T-13 note above for
+   what that actually does and doesn't change.
+3. **HubSpot owner ACL (F-036)** — **Decided: manual, via the Admin API.** Documented in
+   `DEPLOYMENT.md` §3.6: an admin mints a personal key with `principal_id: "hubspot:owner:<id>"` per
+   person who needs restricted-CRM access. No onboarding-sync feature planned; this is intentionally
+   a manual, per-person step.
+4. **S3/MinIO (F-042)** — **Decided: remove.** `boto3` was already gone (F-042); the `minio` service,
+   `miniodata` volume, and all `S3_*` env vars/config fields removed from `docker-compose.yml`,
+   `.env.example`, `.env`, and `config.py`. (`docs/rag-service-konzept.md` still describes S3/artifact
+   storage as a *future* architectural direction — that's a separate, larger product decision than
+   "is the currently-dead scaffolding safe to delete," and wasn't touched.)
+5. **Connector completeness** — **Decided: fix the docs.** README corrected to list the 4 real native
+   connectors (Notion, SharePoint, Jira, HubSpot) plus the generic webhook endpoint for everything
+   else; the false Confluence/"Custom" claims are gone.
+6. **Reranker default** — **Decided: harden ollama/cohere into a real supported option** (not change
+   the shipped default away from `passthrough`). T-12's correctness fixes (dataclasses.replace,
+   SCORE_SCALE) were already done in Phase C; the remaining gap — `CohereRerankProvider.rerank()` had
+   zero error handling, so a Cohere outage would 500 `/v1/retrieve`/`/v1/answer` — is closed alongside
+   this answer. See T-33 below.
+
+---
+
+## 6. Phase F — Post-audit deployment-readiness fixes — ✅ DONE (2026-07-06)
+
+Triggered by a deployment-readiness review (independent of the T-01–T-28 scope): re-checked every
+item in §3 "Needs Verification" live rather than trusting the original audit-time snapshot, which
+surfaced 3 new real gaps, then implemented the answers to all 6 §5 open questions plus the 2
+previously-deferred F-046 items (SharePoint sync fairness, webhook idempotency).
+
+- **T-29 (found during §3 re-verification)** — `DEPLOYMENT.md` referenced
+  `ghcr.io/timtogram/raasoa:latest` and a `make release` target, neither of which exist (CI builds
+  with `push: false`; there is no `Makefile` in the repo at all). ✅ §3.1 rewritten to describe the
+  only real path (`docker buildx build ... --load .`), cross-referencing §9's already-correct
+  build/export/optional-push commands instead of duplicating a broken shortcut.
+- **T-30 (found during §3 re-verification)** — `docker-entrypoint.sh`'s runtime `uv run alembic`/
+  `uv run uvicorn` calls didn't pass `--frozen --no-sync`, risking a network dependency at container
+  startup in network-isolated deployments (the exact scenario §3 flagged: `docker run --network none`).
+  ✅ Added to all three runtime `uv run` invocations. **Verified live**, not just by reading the flag
+  docs: built the image, stood up an isolated Docker network with only a fresh Postgres reachable (no
+  internet, no DNS beyond that one container), and ran the full default entrypoint flow — DB-wait,
+  all migrations from scratch, server start, `/health/ready` 200 — successfully with zero network
+  access beyond Postgres.
+- **T-31 (found during §3 re-verification)** — the HubSpot owner→principal mapping (§5 question 3)
+  was confirmed still entirely unwired: `grep -rn "hubspot:owner" src/` shows the ACL grant side is
+  real, but nothing ever maps a logged-in person to that principal. ✅ Documented as `DEPLOYMENT.md`
+  §3.6 (the owner's chosen manual/admin-API approach). **Verified live**: ran the exact documented
+  `POST /v1/admin/enable` → `POST /v1/admin/keys` sequence against a running instance and confirmed
+  the response contains the expected `principal_id`.
+- **T-32 (§5 questions 1, 4, 5)** — Deployment model: no code change needed (single-tenant confirmed
+  fine as shipped). S3/MinIO: removed the `minio` service, `miniodata` volume, and all `S3_*`
+  variables from `docker-compose.yml`, `.env.example`, `.env`, and `config.py` — none were ever read
+  by application code (`boto3` was already gone). Connector docs: README corrected to the 4 real
+  native connectors (Notion, SharePoint, Jira, HubSpot) + generic webhook, removing the false
+  Confluence/"Custom" claims. **Verified**: full test suite green after the S3/MinIO removal
+  (confirmed a stray real `.env` — gitignored, not just `.env.example` — still had the now-removed
+  `S3_*` keys, which made `pydantic-settings`' `extra="forbid"` default hard-fail at import; fixed
+  that file too, not just the example).
+- **T-33 (§5 question 6)** — `CrossEncoderReranker.rerank()` now catches any exception from the
+  underlying `RerankProvider` (covers `CohereRerankProvider`'s total lack of error handling, and any
+  future provider) and degrades to the unreranked hybrid-search results with a neutral `0.5` score
+  (not the original ~0.033-scale RRF score, which would have silently miscalibrated
+  `compute_confidence()` under the reranker's declared `SCORE_SCALE=1.0`) instead of 500ing
+  `/v1/retrieve`/`/v1/answer`. `OllamaReranker` already degraded per-item on failure but only logged
+  at `debug`; it now also logs one aggregate `warning` per call when any items failed, so a total
+  outage is actually visible in production logs. **Verified**: 2 new tests, each confirmed via `git
+  stash` to fail against the pre-fix code (one with the exact pre-fix `httpx.ConnectError`
+  propagating uncaught, one with the missing aggregate log line).
+- **T-34 (F-046, previously deferred)** — SharePoint multi-drive sync fairness. A new pure
+  `_rotate_drives()` helper rotates which drive gets first-in-line budget priority each delta-sync
+  call (persisted via a `__last_first_drive__` marker reusing the existing per-drive cursor JSON
+  blob), guaranteeing every drive gets to go first at least once every `len(drives)` calls instead of
+  API-return order permanently starving non-first drives. Cursor persistence changed from
+  all-or-nothing (thrown away entirely if the limit was hit before every drive finished — the
+  overwhelmingly common case) to progressive: each drive's advanced cursor is written immediately
+  after that drive completes. **Verified**: 8 unit tests for `_rotate_drives` (including a full-cycle
+  test proving every drive goes first exactly once per `len(drives)` calls) plus one end-to-end test
+  driving the real `_sync_sharepoint` orchestration with the Graph API boundary mocked (OAuth, drive
+  listing, per-drive delta sync) and real Postgres cursor persistence — proving two consecutive calls
+  with a limit too small for one drive to finish reach drive B on the second call, where the old fixed
+  order never would. Confirmed via `git stash` that the whole test module fails to even import without
+  `_rotate_drives` (the bluntest possible regression signal, but a valid one).
+- **T-35 (F-046, previously deferred)** — webhook idempotency-key dedup. New `webhook_idempotency_keys`
+  table (migration `r8e9f0a1b2c3`) caches a terminal response per `(tenant_id, idempotency_key)`; a
+  retried delivery with the same key short-circuits to the cached response before any processing,
+  including source lookup/creation. Deliberately does NOT cache the create/update path's `except
+  Exception` branch — a transient failure must remain retryable with the same key. 48h TTL purge added
+  to `run_retention_cleanup()`. **Verified**: 5 tests (duplicate-create dedup checked against actual
+  document count in the DB, not just the HTTP response; no-key regression check; delete-retry proven
+  via a mock call-count assertion that the cascade-delete helper only runs once; a simulated 500
+  followed by a real retry with the same key proven to actually succeed; TTL purge proven by inserting
+  a backdated row and asserting it's gone after cleanup). 2 of 5 confirmed via `git stash` to fail
+  without the fix; the other 3 pass either way by design (they assert no-regression behavior, not the
+  new mechanism itself).
+- **A critical latent bug surfaced by T-32's `llm_judge_enabled=true` flip** — see the T-13 note
+  above for the full `MissingGreenlet` story and the `pipeline.py` fix
+  (`await session.refresh(doc)`). Caught only because the full suite was re-run after the config
+  change instead of trusting it in isolation; would otherwise have shipped a config flip that 500s
+  most real ingests.
+
+**Note on tooling**: the first attempt at T-34/T-35 used a 2-agent parallel `Workflow` run
+(`wf_53c28ba7-324`) with very detailed, fully-specified prompts. Both agents stalled after 6 retry
+attempts each (~105 minutes, ~308k tokens, zero net progress beyond one already-correct-but-unapplied
+migration file for T-35). Root cause not conclusively diagnosed; abandoned rather than retried, and
+both tasks were implemented directly instead — a pragmatic recovery given the design was already fully
+worked out, not a general judgment against the tool.
+
+**Full verification**: 427 tests passed (up from 414 at the end of Phase E), 0 skipped beyond the
+pre-existing DB-reachability skips, `ruff` and `mypy` both clean. Live re-verification: the full
+Docker build + network-isolated startup flow (T-30), the documented HubSpot admin-key flow (T-31),
+and the full demo (load data → search → conflicts) via the browser preview tools.
