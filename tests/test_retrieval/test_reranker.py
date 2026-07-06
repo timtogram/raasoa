@@ -1,5 +1,6 @@
 """Tests for reranker strategies."""
 
+import json
 import logging
 import uuid
 
@@ -195,3 +196,68 @@ async def test_ollama_reranker_survives_total_outage(
     assert any(
         "2/2 items failed" in r.message for r in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_ollama_reranker_requests_think_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F-046 follow-up: reasoning models (e.g. qwen3) emit an internal
+    <think>...</think> block BEFORE the answer. Newer Ollama versions
+    return that in a separate top-level "thinking" field rather than
+    inlining it into "response", so the old "/no_think" prompt-prefix
+    hack didn't suppress it -- thinking silently consumed the entire
+    num_predict budget, leaving "response" empty on every single call
+    (verified live against a real qwen3:8b model). The documented
+    "think" API field is what actually disables it."""
+    captured_payload: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.content)
+        return httpx.Response(200, json={"response": "0.9"})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def _factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = transport  # type: ignore[assignment]
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", _factory)
+
+    reranker = OllamaReranker(base_url="http://ollama.test", model="qwen3:8b")
+    await reranker.rerank("query", [_make_result(0.5)], top_k=1)
+
+    assert captured_payload.get("think") is False
+    assert "/no_think" not in str(captured_payload.get("prompt", ""))
+
+
+@pytest.mark.asyncio
+async def test_ollama_reranker_empty_response_counts_as_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Regression for the exact live failure mode: a 200 response with
+    an empty/unparseable "response" field (thinking ate the whole
+    token budget) must count toward the aggregate failure warning, not
+    silently return a neutral score with zero visibility."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"response": ""})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def _factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = transport  # type: ignore[assignment]
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", _factory)
+
+    reranker = OllamaReranker(base_url="http://ollama.test", model="qwen3:8b")
+    results = [_make_result(0.9), _make_result(0.8)]
+
+    with caplog.at_level(logging.WARNING):
+        reranked = await reranker.rerank("query", results, top_k=2)
+
+    assert all(r.score == 0.5 for r in reranked)
+    assert any("2/2 items failed" in r.message for r in caplog.records)

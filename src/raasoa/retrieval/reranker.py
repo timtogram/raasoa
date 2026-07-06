@@ -142,14 +142,29 @@ class OllamaReranker:
                     f"{self._base_url}/api/generate",
                     json={
                         "model": self._model,
-                        "prompt": f"/no_think\n{prompt}",
+                        "prompt": prompt,
                         "stream": False,
+                        # Reasoning models (e.g. qwen3) emit an internal
+                        # <think>...</think> block BEFORE the actual
+                        # answer, and newer Ollama versions return that
+                        # in a separate top-level "thinking" field, not
+                        # inlined into "response" -- so the "/no_think"
+                        # prompt-prefix hack this used to rely on doesn't
+                        # suppress it, and thinking silently consumes the
+                        # entire num_predict budget, leaving "response"
+                        # empty. The documented "think" API field
+                        # actually disables it (verified live: response
+                        # goes from "" using all 16 tokens on invisible
+                        # reasoning, to a directly parseable "0" using 2).
+                        "think": False,
                         "options": {"num_predict": 16},
                     },
                 )
                 resp.raise_for_status()
                 raw = resp.json().get("response", "").strip()
-                # Strip thinking tags
+                # Strip thinking tags -- kept as defense-in-depth for
+                # any model/Ollama version that still inlines them into
+                # "response" despite think=False.
                 import re as _re
                 raw = _re.sub(
                     r"<think>.*?</think>", "", raw, flags=_re.DOTALL,
@@ -159,6 +174,15 @@ class OllamaReranker:
                 if match:
                     score = float(match.group(1))
                     return max(0.0, min(1.0, score))
+                # A 200 response with no parseable number is just as much
+                # a real failure as an exception -- e.g. the model was
+                # still cut off mid-answer -- and deserves the same
+                # aggregate-failure visibility, not a silent 0.5.
+                logger.debug(
+                    "Ollama rerank scoring returned no parseable "
+                    "number: %r", raw,
+                )
+                failures.append(1)
                 return 0.5
             except Exception:
                 logger.debug(
