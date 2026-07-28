@@ -10,9 +10,12 @@ key is set.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -712,6 +715,40 @@ async def _mark_notion_pages_deleted(
     return len(deleted_doc_ids)
 
 
+_NOTION_MAX_RETRIES = 3
+_NOTION_RETRY_DELAY = 1.0
+_NOTION_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+async def _notion_request_with_retry(
+    method: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any,
+) -> Any:
+    """Call a Notion API request (``client.post``/``client.get``) with
+    retry + backoff on rate limiting (429) and transient server errors
+    (5xx) -- previously any of these aborted the sync immediately,
+    discarding every page already fetched into ``results`` this run.
+
+    Honors a numeric ``Retry-After`` header when Notion provides one
+    (rate-limit responses commonly do); otherwise falls back to
+    exponential backoff. Returns the final response as-is (even one that
+    never succeeded) after exhausting retries, so callers keep their
+    existing status-code handling unchanged.
+    """
+    resp = None
+    for attempt in range(_NOTION_MAX_RETRIES):
+        resp = await method(*args, **kwargs)
+        if resp.status_code not in _NOTION_RETRYABLE_STATUS:
+            return resp
+        if attempt < _NOTION_MAX_RETRIES - 1:
+            retry_after = getattr(resp, "headers", {}).get("Retry-After")
+            delay = _NOTION_RETRY_DELAY * 2**attempt
+            if retry_after:
+                with contextlib.suppress(ValueError):
+                    delay = float(retry_after)
+            await asyncio.sleep(delay)
+    return resp
+
+
 async def _sync_notion(
     session: AsyncSession,
     tenant_id: uuid.UUID,
@@ -766,6 +803,14 @@ async def _sync_notion(
         # truncating at the first page.
         results: list[dict[str, Any]] = []
         next_cursor: str | None = None
+        # Whether this run's `results` genuinely represents the complete,
+        # current search result set (Notion reported has_more=False) --
+        # as opposed to being truncated early by the `limit` cap below.
+        # Deletion detection further down must only trust a complete
+        # listing; a `limit`-truncated partial one says nothing about
+        # pages beyond what was fetched, and would otherwise wrongly mark
+        # them as deleted.
+        search_complete = True
         while True:
             search_body: dict[str, Any] = {
                 "page_size": min(limit, 100),
@@ -781,7 +826,8 @@ async def _sync_notion(
             if next_cursor:
                 search_body["start_cursor"] = next_cursor
 
-            resp = await client.post(
+            resp = await _notion_request_with_retry(
+                client.post,
                 "https://api.notion.com/v1/search",
                 headers=headers,
                 json=search_body,
@@ -794,6 +840,13 @@ async def _sync_notion(
 
             page_data = resp.json()
             results.extend(page_data.get("results", []))
+            if len(results) >= limit:
+                # `sync_limit` is documented as "Max records to pull in
+                # the initial sync" -- previously ignored beyond setting
+                # page_size, so an admin expecting a bounded test sync
+                # got Notion's entire matching result set instead.
+                search_complete = False
+                break
             if not page_data.get("has_more"):
                 break
             next_cursor = page_data.get("next_cursor")
@@ -930,14 +983,16 @@ async def _sync_notion(
                     {"page": title, "error": str(e)[:200]},
                 )
 
-    # Deletion/archival detection: only safe for a full, unscoped search
-    # (query in ("*", "", None)) — `results` then represents everything
-    # Notion's search currently returns for this integration, so anything
-    # previously synced but now absent has been archived, trashed, or
-    # unshared. A narrower/filtered query's results say nothing about
-    # pages outside that query's scope, so running this for one would
-    # wrongly mark unrelated documents as deleted.
-    if not query or query == "*":
+    # Deletion/archival detection: only safe for a full, unscoped, and
+    # COMPLETE search (query in ("*", "", None) AND search_complete) --
+    # `results` then represents everything Notion's search currently
+    # returns for this integration, so anything previously synced but now
+    # absent has been archived, trashed, or unshared. A narrower/filtered
+    # query's results say nothing about pages outside that query's scope,
+    # and a `limit`-truncated partial listing says nothing about pages
+    # beyond what was fetched -- running this for either would wrongly
+    # mark unrelated/not-yet-fetched documents as deleted.
+    if (not query or query == "*") and search_complete:
         active_page_ids = {
             page["id"] for page in results if page.get("object") == "page"
         }
@@ -2410,7 +2465,8 @@ async def _fetch_notion_blocks_text(
         params: dict[str, Any] = {"page_size": 100}
         if start_cursor:
             params["start_cursor"] = start_cursor
-        resp = await client.get(
+        resp = await _notion_request_with_retry(
+            client.get,
             f"https://api.notion.com/v1/blocks/{block_id}/children",
             headers=headers,
             params=params,
