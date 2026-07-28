@@ -6,6 +6,7 @@ from raasoa.api.sources import (
     _hubspot_record_to_markdown,
     _jira_issue_metadata,
     _jira_issue_to_markdown,
+    _notion_block_to_text,
     _notion_blocks_to_text,
     _sharepoint_item_path,
     _sharepoint_source_object_id,
@@ -96,6 +97,42 @@ def test_notion_blocks_to_text_preserves_common_blocks() -> None:
     assert "## Plan" in text
     assert "- Ship it" in text
     assert "[x] Verified" in text
+
+
+def test_notion_table_row_cells_are_rendered_not_dropped() -> None:
+    """Regression: table_row's cell content lives under "cells" (a list
+    of lists of rich-text objects), not "rich_text" like every other
+    block -- the generic rich_text-based extraction silently produced an
+    empty string for every table row before this fix."""
+    row_text = _notion_block_to_text({
+        "type": "table_row",
+        "table_row": {
+            "cells": [
+                [{"plain_text": "Name"}],
+                [{"plain_text": "Status"}],
+            ],
+        },
+    })
+    assert row_text == "| Name | Status |"
+
+
+def test_notion_table_row_with_empty_cells_is_dropped() -> None:
+    row_text = _notion_block_to_text({
+        "type": "table_row",
+        "table_row": {"cells": [[], []]},
+    })
+    assert row_text == ""
+
+
+def test_notion_table_parent_block_contributes_no_text_itself() -> None:
+    """The parent "table" block carries only layout config
+    (table_width/has_column_header/has_row_header), never cell data --
+    its rows arrive separately as table_row children."""
+    table_text = _notion_block_to_text({
+        "type": "table",
+        "table": {"table_width": 2, "has_column_header": True},
+    })
+    assert table_text == ""
 
 
 def test_hubspot_record_title_prefers_named_property() -> None:

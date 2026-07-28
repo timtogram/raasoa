@@ -2341,6 +2341,24 @@ async def _fetch_notion_blocks_text(
 def _notion_block_to_text(block: dict[str, Any]) -> str:
     bt = block.get("type", "")
     content = block.get(bt, {})
+
+    # table_row's cell content lives under "cells" (a list of lists of
+    # rich-text objects, one inner list per column), not "rich_text" like
+    # every other block type -- handled separately before the generic
+    # rich_text extraction below, which would otherwise always see an
+    # empty list and silently drop every row's data. The parent "table"
+    # block itself carries no cell data (just table_width/has_*_header
+    # config) -- its rows arrive as children blocks via the recursive
+    # fetch in _fetch_notion_blocks_text, so it needs no special case.
+    if bt == "table_row":
+        cells = content.get("cells", [])
+        cell_texts = [
+            "".join(rt.get("plain_text", "") for rt in cell) for cell in cells
+        ]
+        if not any(cell_texts):
+            return ""
+        return "| " + " | ".join(cell_texts) + " |"
+
     rich_text = content.get("rich_text", [])
     text_val = "".join(rt.get("plain_text", "") for rt in rich_text)
     if not text_val:
