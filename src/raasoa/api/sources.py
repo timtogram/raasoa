@@ -1,8 +1,11 @@
 """Source connector management API.
 
 Create, configure, and sync data sources from the dashboard or API.
-Each source stores its connection config (tokens, URLs, filters)
-encrypted in the database and can be synced on demand.
+Each source's connection config (tokens, URLs, filters) has its
+credential fields (token/client_secret/api_token) encrypted at rest via
+raasoa.security.crypto when CONNECTOR_ENCRYPTION_KEY is configured --
+see that module for the exact scheme and the plaintext fallback when no
+key is set.
 """
 
 from __future__ import annotations
@@ -261,6 +264,8 @@ async def create_source(
     )
 
     source_id = uuid.uuid4()
+    from raasoa.security.crypto import encrypt_sensitive_config
+
     await session.execute(
         text(
             "INSERT INTO sources "
@@ -272,14 +277,14 @@ async def create_source(
             "tid": tenant_id,
             "stype": body.source_type,
             "name": body.name,
-            "config": json.dumps({
+            "config": json.dumps(encrypt_sensitive_config({
                 **body.config,
                 **(
                     {"sync_interval_minutes": body.sync_interval_minutes}
                     if body.sync_interval_minutes is not None
                     else {}
                 ),
-            }),
+            })),
             "vis": default_visibility,
         },
     )
@@ -594,7 +599,9 @@ async def sync_source(
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    config = source.connection_config or {}
+    from raasoa.security.crypto import decrypt_sensitive_config
+
+    config = decrypt_sensitive_config(source.connection_config)
 
     # Update sync status
     await session.execute(

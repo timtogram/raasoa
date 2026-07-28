@@ -493,6 +493,8 @@ async def dashboard_create_source(
     if not allowed:
         return JSONResponse(status_code=429, content={"detail": reason})
 
+    from raasoa.security.crypto import encrypt_sensitive_config
+
     await session.execute(
         text(
             "INSERT INTO sources (id, tenant_id, source_type, name, connection_config) "
@@ -503,7 +505,7 @@ async def dashboard_create_source(
             "tid": tid,
             "stype": body.get("source_type", "custom"),
             "name": body.get("name", "Unnamed"),
-            "config": _json.dumps(body.get("config", {})),
+            "config": _json.dumps(encrypt_sensitive_config(body.get("config", {}))),
         },
     )
     await session.commit()
@@ -548,9 +550,10 @@ async def dashboard_sync_source(
         })
 
     from raasoa.api.sources import _sync_jira, _sync_notion, _sync_sharepoint
+    from raasoa.security.crypto import decrypt_sensitive_config
 
     tenant_uuid = _uuid_mod.UUID(tid)
-    config = source.connection_config or {}
+    config = decrypt_sensitive_config(source.connection_config)
     query = body.get("query", "*")
     limit = body.get("limit", 50)
     if source.source_type == "notion":

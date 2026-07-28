@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     webhook_secret: str = ""  # shared secret for webhook authentication
     dashboard_password: str = ""  # password for dashboard access (empty = no dashboard auth)
 
+    # Connector credential encryption — see raasoa.security.crypto. A
+    # Fernet key (generate with `python -c "from cryptography.fernet
+    # import Fernet; print(Fernet.generate_key().decode())"`) used to
+    # encrypt sensitive fields (token/client_secret/api_token) within
+    # sources.connection_config at rest. Empty = store plaintext (today's
+    # behavior) with a startup warning — not a hard failure, since
+    # requiring this unconditionally would break every existing
+    # deployment on upgrade.
+    connector_encryption_key: str = ""
+
     # Dashboard
     dashboard_enabled: bool = True
 

@@ -84,8 +84,9 @@ async def run_scheduled_syncs() -> dict[str, Any]:
                     _sync_notion,
                     _sync_sharepoint,
                 )
+                from raasoa.security.crypto import decrypt_sensitive_config
 
-                config = source.connection_config or {}
+                config = decrypt_sensitive_config(source.connection_config)
 
                 if source.source_type == "notion":
                     sync_stats = await _sync_notion(
