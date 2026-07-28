@@ -495,6 +495,16 @@ async def dashboard_create_source(
 
     from raasoa.security.crypto import encrypt_sensitive_config
 
+    sync_interval_minutes = body.get("sync_interval_minutes")
+    config = {
+        **body.get("config", {}),
+        **(
+            {"sync_interval_minutes": sync_interval_minutes}
+            if sync_interval_minutes is not None
+            else {}
+        ),
+    }
+
     await session.execute(
         text(
             "INSERT INTO sources (id, tenant_id, source_type, name, connection_config) "
@@ -505,7 +515,7 @@ async def dashboard_create_source(
             "tid": tid,
             "stype": body.get("source_type", "custom"),
             "name": body.get("name", "Unnamed"),
-            "config": _json.dumps(encrypt_sensitive_config(body.get("config", {}))),
+            "config": _json.dumps(encrypt_sensitive_config(config)),
         },
     )
     await session.commit()
