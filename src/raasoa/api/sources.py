@@ -803,6 +803,16 @@ async def _sync_notion(
         stats["found"] = len(results)
         provider = get_embedding_provider()
         newest_edited_time: str | None = None
+        # If ANY page in this batch fails to fetch its blocks, the cursor
+        # must not advance at all this run -- not just skip crediting
+        # that one page's own timestamp. Results are sorted
+        # newest-last_edited_time-first once a cursor exists, so a
+        # transient failure on an OLDER page sitting next to a NEWER page
+        # that succeeds would otherwise still let the cursor jump past
+        # the older page's timestamp (advancing to the newer success),
+        # permanently classifying the older, never-actually-synced page
+        # as "unchanged" on every future sync. See test_notion_delta_cursor_retry.py.
+        any_block_fetch_failed = False
 
         for page in results:
             if page.get("object") != "page":
@@ -832,11 +842,19 @@ async def _sync_notion(
                 stats["unchanged"] += 1
                 continue
 
-            # Fetch page blocks
+            # Fetch page blocks. A transient failure here (network blip,
+            # 429, 5xx) degrades to title-only content rather than
+            # skipping the page outright, but must also block the delta
+            # cursor from advancing this run (see any_block_fetch_failed
+            # above) -- otherwise this page ends up ingested with only
+            # its title, permanently marked "caught up" by a DIFFERENT,
+            # newer page's success in the same batch, and never retried
+            # even though a subsequent sync would likely fetch it fine.
             try:
                 content = await _fetch_notion_blocks_text(client, headers, page_id)
             except Exception:
                 content = title
+                any_block_fetch_failed = True
 
             # Build file with metadata header
             meta_header = ""
@@ -928,6 +946,13 @@ async def _sync_notion(
         )
         stats["deleted"] += deleted_count
 
+    # Notion's search gives no per-page "did this fully succeed" signal
+    # of its own, so this is the connector's honest answer to whether the
+    # whole batch is safe to consider caught up (mirrors _sync_sharepoint's
+    # delta_complete; the scheduler/manual-sync status computation already
+    # reads this key generically via stats.get("delta_complete", True)).
+    stats["delta_complete"] = not any_block_fetch_failed
+
     # Update delta token for next sync. Use the max last_edited_time
     # actually seen among the pages processed in this sync — NOT
     # wall-clock "now" — so that (a) edits made between the search call
@@ -938,13 +963,26 @@ async def _sync_notion(
     # wrongly treated as already-synced just because the cursor jumped to
     # "now".
     if stats["synced"] > 0 and newest_edited_time:
-        # Never move the cursor backwards relative to what was already
-        # stored, in case of a mixed-format comparison edge case.
-        new_token = newest_edited_time
-        if last_sync_token:
-            last_sync_norm_final = _normalize_timestamp(last_sync_token)
-            if last_sync_norm_final and last_sync_norm_final > new_token:
-                new_token = last_sync_norm_final
+        if any_block_fetch_failed:
+            # A transient failure fetching SOME page's blocks means we
+            # can't be sure the whole batch up to newest_edited_time
+            # actually completed -- advancing the cursor anyway would
+            # permanently classify that page (and it alone, chronologically
+            # earlier than whatever succeeded) as "unchanged" on every
+            # future sync, even though a retry would likely fetch it fine.
+            # Leaving delta_token untouched means every page in this batch
+            # -- successes included -- gets re-examined next sync, a cheap,
+            # harmless no-op for the ones already fully ingested thanks to
+            # ingest_file's content-hash dedup.
+            new_token = last_sync_token
+        else:
+            # Never move the cursor backwards relative to what was already
+            # stored, in case of a mixed-format comparison edge case.
+            new_token = newest_edited_time
+            if last_sync_token:
+                last_sync_norm_final = _normalize_timestamp(last_sync_token)
+                if last_sync_norm_final and last_sync_norm_final > new_token:
+                    new_token = last_sync_norm_final
 
         await session.execute(
             text(
@@ -952,16 +990,17 @@ async def _sync_notion(
                 "(source_type, source_id, delta_token, "
                 " last_sync_at, sync_status, items_synced) "
                 "VALUES ('notion', :sid, :token, now(), "
-                " 'completed', :count) "
+                " :status, :count) "
                 "ON CONFLICT (source_type, source_id) "
                 "DO UPDATE SET delta_token = :token, "
                 "  last_sync_at = now(), "
-                "  sync_status = 'completed', "
+                "  sync_status = :status, "
                 "  items_synced = :count"
             ),
             {
                 "sid": source_id,
                 "token": new_token,
+                "status": "completed" if not any_block_fetch_failed else "incomplete",
                 "count": stats["synced"],
             },
         )
