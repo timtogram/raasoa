@@ -3,6 +3,20 @@
 Checks all sources with a sync_interval set and triggers sync
 when the interval has elapsed since the last sync.
 
+``sync_cursors.sync_status`` has three states relevant here:
+  - "running": a sync call is actively in flight right now (set at the
+    very start of a call). The due-query below excludes this to avoid
+    starting a second, overlapping sync of the same source.
+  - "incomplete": the last call finished, but the connector's backlog
+    didn't fit in one call's limit (e.g. a large SharePoint drive with
+    thousands of files) — there is known, pending work. The due-query
+    treats this as due IMMEDIATELY, ignoring the normal interval, so a
+    big initial sync converges over consecutive ticks instead of one
+    batch per interval (which could take many hours for a large
+    library).
+  - "completed": fully caught up as of the last sync; waits the normal
+    interval before being due again.
+
 Usage:
     # Run as background worker alongside the API
     uv run python -m raasoa.worker.sync_scheduler
@@ -45,6 +59,7 @@ async def run_scheduled_syncs() -> dict[str, Any]:
                 "  IS NOT NULL "
                 "AND ("
                 "  sc.last_sync_at IS NULL "
+                "  OR sc.sync_status = 'incomplete' "
                 "  OR sc.last_sync_at < now() - "
                 "    ((s.connection_config"
                 "      ->>'sync_interval_minutes')::int "
@@ -121,22 +136,32 @@ async def run_scheduled_syncs() -> dict[str, Any]:
                         source.name, source.source_type,
                     )
 
-                # Update sync cursor
+                # Update sync cursor. A connector reporting
+                # delta_complete=False has known backlog left over from
+                # this call's limit -- marking it "completed" here would
+                # both mislead an operator and, via the due-query above,
+                # make it wait a full interval before being retried
+                # instead of being picked up again on the very next tick.
+                final_status = (
+                    "completed" if sync_stats.get("delta_complete", True)
+                    else "incomplete"
+                )
                 await session.execute(
                     text(
                         "INSERT INTO sync_cursors "
                         "(source_type, source_id, sync_status, "
                         " last_sync_at, items_synced) "
-                        "VALUES (:stype, :sid, 'completed', "
+                        "VALUES (:stype, :sid, :status, "
                         " now(), :count) "
                         "ON CONFLICT (source_type, source_id) "
-                        "DO UPDATE SET sync_status = 'completed', "
+                        "DO UPDATE SET sync_status = :status, "
                         "  last_sync_at = now(), "
                         "  items_synced = :count"
                     ),
                     {
                         "stype": source.source_type,
                         "sid": source.id,
+                        "status": final_status,
                         "count": sync_stats.get("synced", 0),
                     },
                 )
