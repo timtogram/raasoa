@@ -2288,6 +2288,36 @@ async def _delete_sharepoint_item(
     return len(deleted_doc_ids)
 
 
+def _record_sharepoint_skip_reason(stats: dict[str, Any], reason: str) -> None:
+    """Track WHY an item was skipped, not just that it was.
+
+    Previously every skip reason (unsupported extension, OneNote/package
+    items, oversized files, non-file items) collapsed into a single
+    opaque `skipped` counter -- an admin watching sync stats had no way
+    to tell "12 modern .aspx pages aren't covered" apart from "12 video
+    files aren't covered" apart from "12 items failed for some other
+    reason". `skip_reasons` breaks this down so the gap is actually
+    visible instead of silently invisible.
+
+    Known, deliberately out-of-scope content types surfaced this way:
+    - "aspx_modern_page": modern SharePoint communication-site pages
+      (news posts, wiki-style pages) -- their real content lives in the
+      Graph Pages API's canvas/web-part model, a materially different
+      integration from downloading a file's raw bytes.
+    - "onenote_or_package_item": OneNote notebooks -- Graph exposes
+      these via a completely separate OneNote API
+      (/sites/{id}/onenote), not the drives API this connector uses.
+    Both are real, known coverage gaps for a company that keeps
+    knowledge in pages or notebooks rather than files -- documented here
+    (and in DEPLOYMENT.md) as deliberately deferred rather than silently
+    dropped, since properly supporting either is a comparably-sized
+    integration to what SharePoint Lists support required, not a small
+    addition to the existing file-download path.
+    """
+    reasons = stats.setdefault("skip_reasons", {})
+    reasons[reason] = reasons.get(reason, 0) + 1
+
+
 async def _ingest_sharepoint_item(
     *,
     session: AsyncSession,
@@ -2301,10 +2331,26 @@ async def _ingest_sharepoint_item(
     sync_acl: bool,
     stats: dict[str, Any],
 ) -> None:
-    if "folder" in item or "package" in item:
+    if "folder" in item:
+        # Structural, not content -- no signal needed, unlike the cases
+        # below where something was actually skipped over.
+        return
+    if "package" in item:
+        # OneNote notebooks (and other Graph "package" driveItems) have
+        # no supported content-extraction path -- there is a completely
+        # separate Graph API for OneNote (/sites/{id}/onenote) that this
+        # connector doesn't call. Previously this returned silently,
+        # without even incrementing stats["skipped"] -- indistinguishable
+        # from a page that was never discovered at all. Counted with a
+        # distinguishable reason now so an admin can actually see this
+        # content exists and isn't covered, instead of it looking like it
+        # was never there.
+        stats["skipped"] += 1
+        _record_sharepoint_skip_reason(stats, "onenote_or_package_item")
         return
     if "file" not in item:
         stats["skipped"] += 1
+        _record_sharepoint_skip_reason(stats, "not_a_file")
         return
 
     name = item.get("name", "")
@@ -2313,6 +2359,10 @@ async def _ingest_sharepoint_item(
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if ext not in SUPPORTED_SYNC_EXTENSIONS:
         stats["skipped"] += 1
+        _record_sharepoint_skip_reason(
+            stats,
+            "aspx_modern_page" if ext == "aspx" else f"unsupported_extension:{ext or 'none'}",
+        )
         return
 
     try:
@@ -2328,6 +2378,7 @@ async def _ingest_sharepoint_item(
         max_size = settings.max_file_size_mb * 1024 * 1024
         if len(file_data) > max_size:
             stats["skipped"] += 1
+            _record_sharepoint_skip_reason(stats, "file_too_large")
             stats["errors"].append({
                 "file": name,
                 "error": f"file too large ({len(file_data)} bytes)",
