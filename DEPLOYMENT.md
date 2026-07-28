@@ -232,6 +232,150 @@ as any other API key. There is currently no bulk/onboarding-sync path;
 each person who needs restricted-CRM access needs one of these calls
 made for them individually as they join.
 
+### 3.7 Connect Notion & SharePoint (real setup, end to end)
+
+The dashboard's "Add Data Source" cards (`/dashboard/sources`) are the
+fastest path for both. This section covers the part that happens
+*before* you get to that form: creating real credentials in Notion and
+Azure AD, and what to expect once a source is connected.
+
+#### Notion
+
+1. Go to **[notion.so/my-integrations](https://www.notion.so/my-integrations)**,
+   signed in as a workspace member who can create integrations.
+2. **New integration** → pick the workspace to connect → under
+   **Capabilities**, leave only **Read content** checked (RAASOA never
+   writes back to Notion — no comment/insert capability is needed).
+3. Submit, then copy the **Internal Integration Secret** from the
+   integration's page (`ntn_...` for integrations created since late
+   2024, `secret_...` for older ones — both work).
+4. **Share your content with the integration.** This is the step that's
+   easy to miss: a brand-new integration can see *nothing* until pages
+   are explicitly shared with it. Open each top-level page or database
+   you want indexed → **`…` menu → Connections → connect to your
+   integration**. Sharing cascades to every child page underneath, so
+   for full workspace coverage, share your workspace's top-level pages
+   once rather than page-by-page.
+5. In RAASOA's dashboard → Sources → **Notion** card, paste the token,
+   optionally set **Auto-sync every (minutes)** (see "Keeping it in
+   sync" below), and **Connect Notion**. This immediately runs a first
+   sync of up to 50 pages so you see real results (page count,
+   quality scores, any conflicts) right away.
+
+Known, deliberate scope limits (not oversights): Notion **relation**
+and **rollup** database properties aren't captured as searchable text
+(a relation is a bare page UUID with no human-readable value without a
+per-reference API call; a rollup needs recursive unwrapping of a
+possibly-array-typed value) — every other property type (select,
+multi-select, people, date, url, email, phone, number, checkbox,
+formula, rich text) is. Attachment blocks (images/files/PDFs/video)
+surface their caption and URL as text, not their actual binary content
+— Notion doesn't expose a "download this embed" API distinct from
+whatever external host the file actually lives on.
+
+#### SharePoint
+
+RAASOA authenticates to Microsoft Graph as an Azure AD **application**
+(client-credentials flow — no per-user login, no user ever has to
+consent). You need admin rights in the Azure tenant that owns the
+SharePoint site.
+
+1. **Azure Portal → Azure Active Directory → App registrations → New
+   registration.** Any name (e.g. "RAASOA connector"), single-tenant,
+   no redirect URI needed. Note the **Application (client) ID** and the
+   **Directory (tenant) ID** shown on the overview page — these are
+   `client_id` and `tenant_id_azure`.
+2. **Certificates & secrets → New client secret.** Copy the secret
+   **value** immediately (Azure only shows it once) — this is
+   `client_secret`.
+3. **API permissions → Add a permission → Microsoft Graph → Application
+   permissions**, and add:
+   - `Sites.Read.All` — read every site's drives, lists, and items
+     (also covers SharePoint Lists, task-tracker-style content, since
+     Lists live under the same Sites Graph resource as drives)
+   - `Files.Read.All` — read file content
+   Then **Grant admin consent for `<tenant>`** — application
+   permissions don't take effect until an admin explicitly consents;
+   skipping this step is the most common cause of a `403 Forbidden`
+   on the first sync.
+   > Narrower alternative: `Sites.Selected` restricts the app to
+   > specific sites instead of every site in the tenant, but requires
+   > an extra per-site grant call via Graph's
+   > `/sites/{id}/permissions` endpoint (PowerShell or a raw API call)
+   > — worth it for a multi-tenant or highly compartmentalized
+   > deployment, overkill for a single internal team's own library.
+4. Find your **site identifier** — either paste the site's full URL
+   (`https://yourtenant.sharepoint.com/sites/YourSite`) directly into
+   the dashboard's Site field, or resolve a `site_id` yourself via
+   `GET https://graph.microsoft.com/v1.0/sites/yourtenant.sharepoint.com:/sites/YourSite`
+   with a bearer token from step 2's app. Either form works — RAASOA
+   resolves a URL to a site ID internally on first sync.
+5. Dashboard → Sources → **SharePoint** card → fill in tenant ID,
+   client ID, client secret, and the site URL or ID. Leave **Drive ID**
+   empty to scan every document library on the site, or pin one
+   specific library. Check **Also sync SharePoint Lists** if the site
+   has trackers/indexes/directories worth indexing alongside files.
+   Set **Auto-sync every (minutes)** — for a library of any real size,
+   this isn't optional (see below). **Connect SharePoint**.
+
+Known, deliberate scope limits: modern `.aspx` communication-site pages
+(news posts, wiki-style pages) and OneNote notebooks are discovered but
+not content-parsed — their real content lives behind separate Graph API
+surfaces (the Pages API's canvas/web-part model, and the OneNote API at
+`/sites/{id}/onenote` respectively), each a comparably-sized integration
+to what SharePoint Lists support required. Every sync run reports these
+under `skip_reasons` (`aspx_modern_page`, `onenote_or_package_item`) so
+the gap is visible rather than silently invisible — see
+`_record_sharepoint_skip_reason` in `api/sources.py`.
+
+#### Keeping it in sync
+
+**Set "Auto-sync every (minutes)" when you connect** — a source
+connected without it only ever syncs when someone clicks **Sync Now**;
+the scheduler (`worker.sync_scheduler`, part of the `scheduler`
+container, ticks every 60s) skips any source whose config doesn't have
+an interval set at all, full stop. For a large SharePoint library
+specifically, this matters more than it looks: on each scheduled tick,
+a source that didn't finish its backlog last time (`sync_status =
+'incomplete'`) is treated as due *immediately*, ignoring the configured
+interval, so a multi-thousand-file library converges over consecutive
+60-second ticks (500 items per SharePoint tick, 100 per Notion tick)
+instead of waiting a full interval between each chunk. A 5,000-file
+library reaches `sync_status = 'completed'` in roughly ten ticks (~10
+minutes) after the initial connect, then settles into the configured
+interval for ongoing change detection.
+
+To pull more than the dashboard's 50-record first sync in one shot (or
+to combine a larger `sync_limit` with `sync_interval_minutes` in a
+single call), use the full API instead of the quick-connect form:
+
+```bash
+curl -X POST https://your-host/v1/sources \
+  -H "Authorization: Bearer <tenant-master-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_type": "sharepoint",
+    "name": "Team SharePoint",
+    "config": {
+      "tenant_id_azure": "...", "client_id": "...", "client_secret": "...",
+      "site_url": "https://yourtenant.sharepoint.com/sites/YourSite",
+      "sync_lists": true
+    },
+    "sync_interval_minutes": 60,
+    "sync_limit": 500
+  }'
+```
+
+#### Using it from Claude
+
+Once documents are indexed, connect RAASOA to Claude as described in
+`INTEGRATIONS.md` — local Claude Desktop/Code via MCP stdio, or
+Claude.ai via the remote MCP HTTP endpoint. Then just ask: *"Search our
+knowledge base for the Q3 travel policy"* or *"What does our SharePoint
+onboarding checklist say?"* — RAASOA answers with source citations
+back to the originating Notion page or SharePoint file, and flags it if
+two sources disagree.
+
 ---
 
 ## 4. Operations runbook

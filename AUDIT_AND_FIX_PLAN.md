@@ -862,3 +862,97 @@ synthesis, unrelated to this change) ≈5.5s. This is the real tradeoff of Optio
 slower than `passthrough`'s near-instant response, in exchange for actually trustworthy confidence
 scores. Full local test suite re-run with the real default active (437 passed, ~20s vs. ~17s with
 `passthrough` — only 2 tests don't mock the reranker and pay the real cost).
+
+---
+
+## 9. Phase H — Real-deployment readiness for internal Notion + SharePoint use via Claude — ✅ DONE (2026-07-28)
+
+Triggered by a specific deployment target the owner named directly: **internal team use,
+self-hosted, single-tenant, with Notion and SharePoint as the only two knowledge sources, consumed
+primarily via Claude through MCP tools** ("Claude Cowork"). A 4-agent research workflow assessed
+readiness against that exact target and returned a **NO-GO** verdict, citing a SharePoint
+stale-cursor bug that permanently blocks large libraries, weak/absent connector ACL, quota
+provisioning bugs, and missing setup documentation.
+
+Three clarifying questions to the owner narrowed scope before any fix work started:
+- No sensitive/restricted content exists in the Notion/SharePoint workspaces in question — real ACL
+  enforcement between users is explicitly **not** a priority for this deployment.
+- The SharePoint library is **large** (thousands of files) — the stale-cursor bug is a real,
+  must-fix blocker, not a theoretical one.
+- Scope: **"Alles inkl. Content-Abdeckung"** — full content coverage (Notion attachments, tables,
+  deletion detection; SharePoint Lists) — the most comprehensive of three offered options, explicitly
+  *not* including further ACL hardening (per the first answer).
+
+**Blockers fixed (the NO-GO items):**
+- **SharePoint stale-cursor bug** — the delta-sync loop only checked its `limit` cap *inside* the
+  items loop, so a call that hit the limit mid-page returned the original cursor unchanged instead of
+  Graph's own resumable `@odata.nextLink`/`@odata.deltaLink` pointer. Every subsequent call restarted
+  from the exact same place — a library whose backlog exceeded one call's limit could never advance
+  past its first page, permanently. Fixed by checking the limit only *between* pages and always
+  returning a real Graph-provided cursor.
+- **Scheduler false-completion masking** — sync status was written as `'completed'` regardless of
+  whether the connector actually finished, hiding the above bug (and any future one like it) from any
+  operational visibility. Introduced a three-state model (`running` / `incomplete` / `completed`);
+  `incomplete` sources are picked up again on the very next scheduler tick, bypassing the normal
+  interval wait, so a large backlog converges over consecutive ticks instead of one slice per interval.
+- **`/v1/answer` usage-tracking gap** — `track_usage()` was called but never committed, so quota
+  tracking for the exact endpoint MCP/Claude answer-tool calls hit silently no-opped.
+- **`max_sources` defaulted to 1** — blocked provisioning the second of exactly the two connectors
+  (Notion + SharePoint) this deployment needs via the documented API; the dashboard's own
+  create-source route also did a raw INSERT with zero quota check at all, bypassing the limit
+  entirely on that door. Bumped the default to 10 and closed the dashboard bypass.
+- **Credentials stored in plaintext** — added Fernet-based field-level encryption
+  (`security/crypto.py`) for `token`/`client_secret`/`api_token`, backward-compatible with existing
+  plaintext rows and with the JSONB path queries (`connection_config->>'sync_interval_minutes'`) the
+  scheduler depends on.
+
+**Content-coverage work (the "Alles" scope), Notion:** sparse-body database rows were silently
+dropped below a length threshold measured *before* metadata was appended (fixed to measure the full
+assembled text); table blocks were never read at all (added); attachment blocks (images/files/
+PDFs/video/audio/bookmarks) surfaced no metadata (added caption+URL extraction); no deletion/archival
+detection existed (added, gated on an unfiltered, fully-exhausted search so a `limit`-truncated run
+never mass-deletes); a subtle delta-cursor bug could permanently skip a page forever if it merely
+sat next to a newer, successfully-fetched page in the same batch (redesigned to gate cursor
+advancement on a batch-level failure flag, not a per-page one); there was no rate-limit
+retry/backoff at all — a single transient 429/5xx aborted the entire sync, discarding every page
+already fetched that run (added exponential backoff honoring `Retry-After`); the documented
+`sync_limit` parameter only ever sized the page_size, never actually capped total volume pulled
+(fixed to be a real cap); most database property types (number, checkbox, email, phone, formula, and
+several others) were never extracted into searchable text at all (added, deliberately excluding
+relation/rollup as a documented, disproportionate-cost scope decision).
+
+**Content-coverage work, SharePoint:** SharePoint Lists (a separate Graph API surface from document
+libraries — trackers, indexes, directories) weren't discovered or ingested at all (added, opt-in via
+`sync_lists`); `.aspx` modern communication-site pages and OneNote notebooks were silently dropped
+with no visibility at all (assessed full content parsing as a comparably-sized integration to what
+Lists support required — deliberately deferred, but now surfaced via a `skip_reasons` breakdown so
+the gap is visible instead of invisible).
+
+**Gaps found and closed while writing the setup documentation this phase's own fix work implied
+needed to exist** (not part of the original NO-GO list, but "no half-finished features" applies to
+docs and UI reachability the same as to backend logic):
+- The dashboard's SharePoint connect form had no way to enable `sync_lists` at all — the feature this
+  same phase just built was unreachable from the primary UI, only from a raw API call.
+- The dashboard's quick-connect route (`POST /dashboard/api/sources`) never accepted or persisted
+  `sync_interval_minutes`, unlike the full `POST /v1/sources` path. Since the scheduler's due-query is
+  gated entirely on that key being present in `connection_config`, a source connected via the
+  dashboard — the primary, intended path for this deployment — would sync once on connect and then
+  *never again automatically*, silently defeating the stale-cursor and false-completion fixes above
+  for exactly the people expected to use them. Fixed on both the backend (merge into config the same
+  way the full API does) and the dashboard UI (added the field to both connect forms).
+
+**Setup documentation** (`DEPLOYMENT.md` §3.7): real Notion integration creation and page-sharing
+steps (an integration sees nothing until pages are explicitly shared with it — easy to miss), real
+Azure AD app registration and Graph API permission steps (`Sites.Read.All` + `Files.Read.All`,
+admin consent required — the most common cause of a first-sync `403`), and an explanation of how the
+`incomplete`-status auto-retry converges a multi-thousand-file library over consecutive scheduler
+ticks rather than one slice per interval, ending with a pointer to `INTEGRATIONS.md` for the
+"use it from Claude" step.
+
+**Full verification**: every fix in this phase followed the same protocol — implement, `ruff`/`mypy`
+clean, a new regression test proving the failure mode, `git stash` confirming the test fails against
+the pre-fix code, full suite green, then commit. Final state: 521 tests passed / 4 skipped, `ruff`
+and `mypy` both clean. The dashboard fixes (SharePoint Lists toggle, sync-interval field) were also
+verified live via browser preview tools — a real SharePoint source connected through the running
+dashboard persisted `sync_lists` and `sync_interval_minutes` correctly in the database, then was
+cleaned up.

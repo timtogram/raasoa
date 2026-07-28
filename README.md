@@ -78,6 +78,10 @@ PDF, DOCX, XLSX, PPTX, CSV, HTML, TXT, Markdown. Tables preserved. Page numbers 
   push-based endpoint any system with HTTP access can call
   (`document.created`/`updated`/`deleted` events)
 
+Setting up real Notion or SharePoint credentials (Azure AD app
+registration, Graph permissions, sharing pages with a Notion
+integration)? See [DEPLOYMENT.md §3.7](DEPLOYMENT.md#37-connect-notion--sharepoint-real-setup-end-to-end).
+
 ## For AI Agents
 
 RAASOA exposes its knowledge to AI assistants two ways:
