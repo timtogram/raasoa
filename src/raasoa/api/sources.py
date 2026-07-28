@@ -667,6 +667,51 @@ async def sync_source(
         ) from e
 
 
+async def _mark_notion_pages_deleted(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    source_id: uuid.UUID,
+    active_page_ids: set[str],
+) -> int:
+    """Soft-delete documents whose Notion page no longer appears in a
+    full-workspace search — archived, moved to trash, or unshared from
+    the integration.
+
+    Unlike SharePoint's delta feed (which explicitly marks removed items
+    with "@removed"/"deleted"), Notion's search API gives no equivalent
+    deletion signal — it simply omits pages that no longer match. The
+    only way to detect a removal is comparing what search currently
+    returns against what we previously ingested. ``active_page_ids``
+    must come from a full, unscoped search (see the ``query in
+    ("*", "", None)`` guard at the only call site) — comparing against a
+    narrower/filtered query's results would incorrectly mark everything
+    outside that query's scope as deleted.
+    """
+    if not active_page_ids:
+        # An empty active set from a genuinely full search would nuke an
+        # entire workspace's worth of documents on a transient empty
+        # response — never treat "found nothing" as "delete everything".
+        return 0
+
+    active_object_ids = [f"notion:{pid}" for pid in active_page_ids]
+    result = await session.execute(
+        text(
+            "UPDATE documents SET status = 'deleted', "
+            "review_status = 'rejected', last_synced_at = now() "
+            "WHERE tenant_id = :tid AND source_id = :sid "
+            "AND source_object_id LIKE 'notion:%' "
+            "AND status != 'deleted' "
+            "AND NOT (source_object_id = ANY(:active)) "
+            "RETURNING id"
+        ),
+        {"tid": tenant_id, "sid": source_id, "active": active_object_ids},
+    )
+    deleted_doc_ids = [row.id for row in result.fetchall()]
+    await _cascade_delete_document_data(session, deleted_doc_ids)
+    await session.commit()
+    return len(deleted_doc_ids)
+
+
 async def _sync_notion(
     session: AsyncSession,
     tenant_id: uuid.UUID,
@@ -695,7 +740,7 @@ async def _sync_notion(
 
     stats: dict[str, Any] = {
         "found": 0, "synced": 0, "skipped": 0,
-        "unchanged": 0, "errors": [],
+        "unchanged": 0, "deleted": 0, "errors": [],
     }
 
     # Get last sync time for delta-sync
@@ -866,6 +911,22 @@ async def _sync_notion(
                 stats["errors"].append(
                     {"page": title, "error": str(e)[:200]},
                 )
+
+    # Deletion/archival detection: only safe for a full, unscoped search
+    # (query in ("*", "", None)) — `results` then represents everything
+    # Notion's search currently returns for this integration, so anything
+    # previously synced but now absent has been archived, trashed, or
+    # unshared. A narrower/filtered query's results say nothing about
+    # pages outside that query's scope, so running this for one would
+    # wrongly mark unrelated documents as deleted.
+    if not query or query == "*":
+        active_page_ids = {
+            page["id"] for page in results if page.get("object") == "page"
+        }
+        deleted_count = await _mark_notion_pages_deleted(
+            session, tenant_id, source_id, active_page_ids,
+        )
+        stats["deleted"] += deleted_count
 
     # Update delta token for next sync. Use the max last_edited_time
     # actually seen among the pages processed in this sync — NOT
