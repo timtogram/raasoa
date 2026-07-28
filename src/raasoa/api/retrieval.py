@@ -371,9 +371,16 @@ async def answer(
         answerable=conf.answerable,
     )
 
-    # Track usage regardless of outcome.
+    # Track usage regardless of outcome. get_session()'s dependency never
+    # auto-commits on teardown, so without this explicit commit the
+    # tracked event is silently rolled back on every return path below --
+    # /v1/answer would never actually count against max_queries_per_month
+    # even though check_quota() above enforces that same counter,
+    # reopening the exact "switch endpoints to bypass quota" gap this
+    # counter was meant to close.
     from raasoa.middleware.metering import track_usage
     await track_usage(session, tenant_id, "answer", 1, {})
+    await session.commit()
 
     # Honest refusal: too little to go on.
     if not search_results or conf.retrieval_confidence < request.min_confidence:
