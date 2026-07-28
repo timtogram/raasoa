@@ -135,6 +135,53 @@ def test_notion_table_parent_block_contributes_no_text_itself() -> None:
     assert table_text == ""
 
 
+def test_notion_image_with_caption_and_external_url_is_captured() -> None:
+    """Regression: image/file/video/pdf/bookmark/embed blocks carry no
+    "rich_text" key at all -- the generic extraction silently produced
+    an empty string for every one of these, with no signal an
+    attachment had ever existed."""
+    text = _notion_block_to_text({
+        "type": "image",
+        "image": {
+            "type": "external",
+            "external": {"url": "https://example.com/diagram.png"},
+            "caption": [{"plain_text": "Architecture diagram"}],
+        },
+    })
+    assert text == "[Image] Architecture diagram (https://example.com/diagram.png)"
+
+
+def test_notion_pdf_with_internal_file_url_no_caption_is_captured() -> None:
+    text = _notion_block_to_text({
+        "type": "pdf",
+        "pdf": {
+            "type": "file",
+            "file": {"url": "https://notion-static.s3.amazonaws.com/foo.pdf"},
+            "caption": [],
+        },
+    })
+    assert text == "[PDF] (https://notion-static.s3.amazonaws.com/foo.pdf)"
+
+
+def test_notion_bookmark_uses_bare_url_field() -> None:
+    text = _notion_block_to_text({
+        "type": "bookmark",
+        "bookmark": {
+            "url": "https://example.com/article",
+            "caption": [{"plain_text": "Worth reading"}],
+        },
+    })
+    assert text == "[Bookmark] Worth reading (https://example.com/article)"
+
+
+def test_notion_attachment_block_with_neither_caption_nor_url_is_dropped() -> None:
+    text = _notion_block_to_text({
+        "type": "embed",
+        "embed": {"url": "", "caption": []},
+    })
+    assert text == ""
+
+
 def test_hubspot_record_title_prefers_named_property() -> None:
     assert _hubspot_record_title("deals", {"dealname": "Acme Renewal"}) == "Acme Renewal"
     assert _hubspot_record_title("companies", {"name": "Acme Corp"}) == "Acme Corp"

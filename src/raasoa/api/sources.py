@@ -2338,6 +2338,20 @@ async def _fetch_notion_blocks_text(
     return "\n\n".join(parts)
 
 
+# Block types whose content lives under "caption"/"external"/"file"/"url"
+# rather than "rich_text" -- see _notion_block_to_text.
+_NOTION_ATTACHMENT_BLOCK_TYPES: dict[str, str] = {
+    "image": "Image",
+    "file": "File",
+    "pdf": "PDF",
+    "video": "Video",
+    "audio": "Audio",
+    "bookmark": "Bookmark",
+    "embed": "Embed",
+    "link_preview": "Link",
+}
+
+
 def _notion_block_to_text(block: dict[str, Any]) -> str:
     bt = block.get("type", "")
     content = block.get(bt, {})
@@ -2358,6 +2372,32 @@ def _notion_block_to_text(block: dict[str, Any]) -> str:
         if not any(cell_texts):
             return ""
         return "| " + " | ".join(cell_texts) + " |"
+
+    # Attachment-like blocks carry no "rich_text" key at all -- their
+    # description lives under "caption" (a rich-text array, same shape
+    # as everywhere else) and their target under "external.url" or
+    # "file.url" (internal upload; expiring, so kept only as a
+    # point-in-time reference) or a bare "url" for bookmark/embed/
+    # link_preview. Before this, these blocks contributed nothing --
+    # not even a filename, caption, or URL -- so an attachment's
+    # existence was completely invisible to RAG.
+    if bt in _NOTION_ATTACHMENT_BLOCK_TYPES:
+        caption_rt = content.get("caption", [])
+        caption = "".join(rt.get("plain_text", "") for rt in caption_rt)
+        url = (
+            (content.get("external") or {}).get("url")
+            or (content.get("file") or {}).get("url")
+            or content.get("url")
+        )
+        if not caption and not url:
+            return ""
+        label = _NOTION_ATTACHMENT_BLOCK_TYPES[bt]
+        parts = [f"[{label}]"]
+        if caption:
+            parts.append(caption)
+        if url:
+            parts.append(f"({url})")
+        return " ".join(parts)
 
     rich_text = content.get("rich_text", [])
     text_val = "".join(rt.get("plain_text", "") for rt in rich_text)
