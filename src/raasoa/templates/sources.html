@@ -119,6 +119,10 @@
                 <input type="checkbox" id="sp-acl" class="rounded border-gray-300">
                 Sync direct item permissions
             </label>
+            <label class="flex items-center gap-2 text-sm text-gray-600">
+                <input type="checkbox" id="sp-lists" class="rounded border-gray-300">
+                Also sync SharePoint Lists (trackers, indexes, directories)
+            </label>
             <button type="button" onclick="connectSharePoint()"
                     class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
                 Connect SharePoint
@@ -291,7 +295,8 @@ async function connectSharePoint() {
         tenant_id_azure: document.getElementById('sp-tenant').value,
         client_id: document.getElementById('sp-client').value,
         client_secret: document.getElementById('sp-secret').value,
-        sync_acl: document.getElementById('sp-acl').checked
+        sync_acl: document.getElementById('sp-acl').checked,
+        sync_lists: document.getElementById('sp-lists').checked
     };
     if (siteValue.startsWith('http')) config.site_url = siteValue;
     else config.site_id = siteValue;
