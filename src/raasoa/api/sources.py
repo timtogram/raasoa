@@ -923,6 +923,14 @@ async def _sync_notion(
                 meta_header += f"Tags: {', '.join(meta['tags'])}\n"
             if meta.get("parent_path"):
                 meta_header += f"Path: {meta['parent_path']}\n"
+            # Custom database properties (select/people/date/url/rich_text/
+            # number/checkbox/email/phone_number/formula) -- previously
+            # captured only into doc_metadata (exact-match structured
+            # filtering), never into the ingested text itself, so a
+            # database row's "Priority: High" or "Assignee: Alice" was
+            # invisible to semantic/hybrid search and RAG answers.
+            for prop_label, prop_value in (meta.get("custom_properties") or {}).items():
+                meta_header += f"{prop_label}: {prop_value}\n"
 
             file_content = f"# {title}\n"
             if meta_header:
@@ -2364,8 +2372,28 @@ def _notion_metadata(page: dict[str, Any]) -> dict[str, Any]:
 
     Pulls: author, last_edited_by, timestamps, status, tags,
     parent page path — everything useful for quality/governance.
+
+    Also collects every other captured property type (select, people,
+    date, url, rich_text, number, checkbox, email, phone_number, and
+    simple scalar formulas) into ``meta["custom_properties"]`` as
+    "Label: value" pairs, in ADDITION to the existing flattened
+    per-type keys (prop_name.lower(), property_*, date_*, etc.) kept
+    unchanged for structured-filter compatibility
+    (doc_metadata ->> 'key' = 'val'). Previously only status/tags/
+    author/last_edited_by/last_edited_time/parent_path ever reached the
+    ingested file's searchable text (see the meta_header building code
+    in _sync_notion) -- a database row's custom "Priority" select,
+    "Assignee" people property, or "Due Date" would be captured here but
+    never surface in semantic/hybrid search or RAG answers, only via
+    exact-match structured filtering. relation and rollup properties are
+    deliberately NOT captured here: relation values are bare page UUIDs
+    with no human-readable text without an extra API call per
+    reference, and rollup requires recursively unwrapping a nested,
+    possibly-array-typed value -- both a meaningfully bigger lift than
+    the scalar property types below for comparatively little value.
     """
     meta: dict[str, Any] = {}
+    custom_properties: dict[str, str] = {}
 
     # Timestamps
     meta["created_time"] = page.get("created_time")
@@ -2404,6 +2432,7 @@ def _notion_metadata(page: dict[str, Any]) -> dict[str, Any]:
             select_obj = prop.get("select")
             if select_obj and select_obj.get("name"):
                 meta[prop_name.lower()] = select_obj["name"]
+                custom_properties[prop_name] = select_obj["name"]
 
         elif ptype == "multi_select":
             options = prop.get("multi_select", [])
@@ -2416,25 +2445,62 @@ def _notion_metadata(page: dict[str, Any]) -> dict[str, Any]:
             names = [p.get("name", "") for p in people if p.get("name")]
             if names:
                 meta[f"property_{prop_name.lower()}"] = ", ".join(names)
+                custom_properties[prop_name] = ", ".join(names)
 
         elif ptype == "date":
             date_obj = prop.get("date")
             if date_obj and date_obj.get("start"):
                 meta[f"date_{prop_name.lower()}"] = date_obj["start"]
+                custom_properties[prop_name] = date_obj["start"]
 
         elif ptype == "url":
             url_val = prop.get("url")
             if url_val:
                 meta[f"url_{prop_name.lower()}"] = url_val
+                custom_properties[prop_name] = url_val
 
         elif ptype == "rich_text":
             texts = prop.get("rich_text", [])
             text_val = "".join(t.get("plain_text", "") for t in texts)
             if text_val and len(text_val) < 200:
                 meta[prop_name.lower()] = text_val
+                custom_properties[prop_name] = text_val
+
+        elif ptype == "number":
+            number_val = prop.get("number")
+            if number_val is not None:
+                meta[f"number_{prop_name.lower()}"] = number_val
+                custom_properties[prop_name] = str(number_val)
+
+        elif ptype == "checkbox":
+            checkbox_val = bool(prop.get("checkbox"))
+            meta[f"checkbox_{prop_name.lower()}"] = checkbox_val
+            custom_properties[prop_name] = "Yes" if checkbox_val else "No"
+
+        elif ptype == "email":
+            email_val = prop.get("email")
+            if email_val:
+                meta[f"email_{prop_name.lower()}"] = email_val
+                custom_properties[prop_name] = email_val
+
+        elif ptype == "phone_number":
+            phone_val = prop.get("phone_number")
+            if phone_val:
+                meta[f"phone_{prop_name.lower()}"] = phone_val
+                custom_properties[prop_name] = phone_val
+
+        elif ptype == "formula":
+            formula_obj = prop.get("formula") or {}
+            formula_type = formula_obj.get("type", "")
+            formula_val = formula_obj.get(formula_type) if formula_type else None
+            if formula_val is not None:
+                meta[f"formula_{prop_name.lower()}"] = formula_val
+                custom_properties[prop_name] = str(formula_val)
 
     if tags:
         meta["tags"] = tags
+    if custom_properties:
+        meta["custom_properties"] = custom_properties
 
     # Build parent path string
     parent_parts: list[str] = []
