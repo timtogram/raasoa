@@ -793,10 +793,6 @@ async def _sync_notion(
             except Exception:
                 content = title
 
-            if len(content.strip()) < 50:
-                stats["skipped"] += 1
-                continue
-
             # Build file with metadata header
             meta_header = ""
             if meta.get("author"):
@@ -816,6 +812,19 @@ async def _sync_notion(
             if meta_header:
                 file_content += f"\n{meta_header}\n"
             file_content += f"\n{content}"
+
+            # Check the length threshold on the FULLY assembled file, not
+            # just the block-derived body text -- a database row (task
+            # tracker item, CRM record) often has a short title and
+            # little-to-no page body, with all its real information
+            # living in properties captured above in meta_header. Checking
+            # `content` alone (the old behavior) silently dropped every
+            # such row entirely, which for a database-heavy workspace can
+            # mean most rows never make it into the corpus at all.
+            if len(file_content.strip()) < 50:
+                stats["skipped"] += 1
+                continue
+
             file_data = file_content.encode("utf-8")
 
             # Ingest
