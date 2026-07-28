@@ -1089,6 +1089,11 @@ async def _sync_sharepoint(
     - site_id OR site_url: SharePoint site ID or URL
     - drive_id: Optional — specific document library. If omitted, all drives
       for the site are scanned.
+    - sync_lists: Optional, default False — also discover and ingest
+      SharePoint Lists (a separate Graph API surface from document
+      libraries; structured data like trackers/indexes/directories that
+      drives never cover). Opt-in like sync_acl, so existing deployments
+      aren't surprised by new content suddenly appearing.
     """
     import httpx
 
@@ -1222,6 +1227,45 @@ async def _sync_sharepoint(
                 await _persist_sharepoint_cursor_map(
                     session, source_id, cursor_map, stats["synced"], "running",
                 )
+
+        # SharePoint Lists — a completely separate Graph API surface from
+        # drives, opt-in via sync_lists (like sync_acl) so existing
+        # deployments aren't surprised by new content suddenly appearing.
+        # A full re-listing each call (not a delta sync, see
+        # _sync_sharepoint_list_items), gated the same way as drives on
+        # the remaining `limit` budget.
+        if config.get("sync_lists", False):
+            lists = await _sharepoint_lists(client, headers, site_id)
+            all_lists_complete = True
+            active_list_item_ids: set[str] = set()
+            for list_obj in lists:
+                if stats["synced"] >= limit:
+                    all_lists_complete = False
+                    break
+                item_ids, list_complete = await _sync_sharepoint_list_items(
+                    session=session,
+                    tenant_id=tenant_id,
+                    source_id=source_id,
+                    client=client,
+                    headers=headers,
+                    site_id=site_id,
+                    list_obj=list_obj,
+                    limit=limit,
+                    stats=stats,
+                )
+                active_list_item_ids |= item_ids
+                all_lists_complete = all_lists_complete and list_complete
+
+            # Deletion detection only if every list was FULLY listed this
+            # call -- a limit-truncated partial listing says nothing
+            # about items beyond what was fetched, and would otherwise
+            # wrongly mark them as deleted (same reasoning as Notion's
+            # search_complete gate).
+            if all_lists_complete:
+                deleted_count = await _mark_sharepoint_list_items_deleted(
+                    session, tenant_id, source_id, active_list_item_ids,
+                )
+                stats["deleted"] += deleted_count
 
         # Always leave an accurate final status, not just on success — a
         # source whose backlog didn't fit in this call's limit must be
@@ -1774,6 +1818,239 @@ async def _sharepoint_drives(
         drives.extend(data.get("value", []))
         url = data.get("@odata.nextLink")
     return drives
+
+
+async def _sharepoint_lists(
+    client: Any,
+    headers: dict[str, str],
+    site_id: str,
+) -> list[dict[str, Any]]:
+    """Discover SharePoint Lists for a site -- a completely separate
+    Graph API surface (``/sites/{id}/lists``) from document libraries
+    (``/drives``). Previously nothing in this connector ever called
+    this endpoint, so structured internal data kept in Lists (trackers,
+    indexes, directories -- a common pattern for exactly the kind of
+    company knowledge a "primary source" needs to cover) was entirely
+    undiscoverable, not just unparsed.
+
+    Document libraries are themselves represented as list resources
+    with ``list.template == "documentLibrary"`` -- excluded here since
+    they're already covered via ``_sharepoint_drives``/the delta-sync
+    path. Hidden system lists are excluded too.
+    """
+    lists: list[dict[str, Any]] = []
+    url = f"{GRAPH_BASE}/sites/{site_id}/lists"
+    while url:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        for item in data.get("value", []):
+            if item.get("hidden"):
+                continue
+            if (item.get("list") or {}).get("template") == "documentLibrary":
+                continue
+            lists.append(item)
+        url = data.get("@odata.nextLink")
+    return lists
+
+
+def _sharepoint_list_field_value_to_text(value: Any) -> str:
+    """Render a single SharePoint list column value as plain text.
+
+    List item fields (``item["fields"]``) are a flat dict of column
+    internal name -> value, but the value's shape varies by column
+    type: scalars (str/int/float/bool) render directly; lookup/person
+    columns commonly carry a dict with a "LookupValue"/"Title"/
+    "DisplayName" key; multi-value columns (multi-lookup, multi-choice)
+    carry a list, rendered as a comma-joined string.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return ", ".join(
+            _sharepoint_list_field_value_to_text(v) for v in value if v is not None
+        )
+    if isinstance(value, dict):
+        for key in ("LookupValue", "Title", "DisplayName", "Email"):
+            if value.get(key):
+                return str(value[key])
+        return ""
+    return str(value)
+
+
+# Internal column names present on essentially every SharePoint list item
+# that are metadata about the row itself, not user-authored content --
+# excluded from the rendered body text (still fine to leave in raw
+# doc_metadata, just not worth surfacing as prose).
+_SHAREPOINT_LIST_SYSTEM_FIELDS = frozenset({
+    "id", "ContentType", "Modified", "Created", "AuthorLookupId",
+    "EditorLookupId", "_UIVersionString", "Attachments", "Edit",
+    "LinkTitleNoMenu", "LinkTitle", "LinkTitle2", "ItemChildCount",
+    "FolderChildCount", "_ComplianceFlags", "_ComplianceTag",
+    "_ComplianceTagWrittenTime", "_ComplianceTagUserId", "AppAuthorLookupId",
+    "AppEditorLookupId",
+})
+
+
+def _sharepoint_list_item_title(fields: dict[str, Any], item_id: str) -> str:
+    for key in ("Title", "LinkTitle", "Name"):
+        val = fields.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return f"Item {item_id}"
+
+
+def _sharepoint_list_item_to_markdown(
+    list_name: str, fields: dict[str, Any], item_id: str,
+) -> tuple[str, str]:
+    """Render one list item's fields as (title, markdown body)."""
+    title = _sharepoint_list_item_title(fields, item_id)
+    lines = [f"# {title}", "", f"List: {list_name}"]
+    for key, value in fields.items():
+        if key in _SHAREPOINT_LIST_SYSTEM_FIELDS or key == "Title":
+            continue
+        text_val = _sharepoint_list_field_value_to_text(value)
+        if text_val:
+            lines.append(f"{key}: {text_val}")
+    return title, "\n".join(lines)
+
+
+async def _sync_sharepoint_list_items(
+    *,
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    source_id: uuid.UUID,
+    client: Any,
+    headers: dict[str, str],
+    site_id: str,
+    list_obj: dict[str, Any],
+    limit: int,
+    stats: dict[str, Any],
+) -> tuple[set[str], bool]:
+    """Sync items in one SharePoint List up to ``limit`` new ingests,
+    returning (source_object_ids seen so far, whether this list was
+    FULLY listed).
+
+    A full re-listing each call, not a delta sync -- this is a new,
+    opt-in (``sync_lists``) feature, and ingest_file's content-hash
+    dedup already makes re-processing an unchanged item a cheap no-op.
+    The completeness flag matters for the caller's deletion detection:
+    a listing truncated early by ``limit`` says nothing about items
+    beyond what was fetched, so it must not be treated as authoritative
+    for "anything absent was deleted".
+    """
+    from raasoa.ingestion.pipeline import ingest_file
+    from raasoa.providers.factory import get_embedding_provider
+
+    list_id = str(list_obj["id"])
+    list_name = list_obj.get("displayName") or list_obj.get("name") or list_id
+    provider = get_embedding_provider()
+    active_object_ids: set[str] = set()
+    complete = True
+
+    url = f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items"
+    params: dict[str, Any] | None = {"$expand": "fields", "$top": 100}
+    while url:
+        if stats["synced"] >= limit:
+            complete = False
+            break
+
+        resp = await client.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        params = None  # only needed on the first request; nextLink carries it
+
+        for item in data.get("value", []):
+            if stats["synced"] >= limit:
+                complete = False
+                break
+
+            item_id = str(item.get("id", ""))
+            if not item_id:
+                continue
+            fields = item.get("fields") or {}
+            source_object_id = f"sharepoint:list:{list_id}:{item_id}"
+            active_object_ids.add(source_object_id)
+            stats["found"] += 1
+
+            title, body = _sharepoint_list_item_to_markdown(list_name, fields, item_id)
+            if len(body.strip()) < 20:
+                stats["skipped"] += 1
+                continue
+
+            try:
+                doc, _assessment = await ingest_file(
+                    session=session,
+                    tenant_id=tenant_id,
+                    source_id=source_id,
+                    file_data=body.encode("utf-8"),
+                    filename=f"sharepoint-list-{list_id}-{item_id}",
+                    embedding_provider=provider,
+                    source_object_id=source_object_id,
+                    source_url=item.get("webUrl"),
+                    source_metadata={
+                        "connector": "sharepoint",
+                        "content_type": "list_item",
+                        "list_id": list_id,
+                        "list_name": list_name,
+                        "folder_path": f"Lists/{list_name}",
+                    },
+                    last_modified=_parse_datetime(
+                        (item.get("lastModifiedDateTime") or fields.get("Modified")),
+                    ),
+                )
+                await session.refresh(doc)
+                stats["synced"] += 1
+                logger.info(
+                    "Synced SharePoint list item: %s / %s (%d chunks)",
+                    list_name, title, doc.chunk_count,
+                )
+            except Exception as e:
+                stats["errors"].append(
+                    {"list_item": f"{list_name}/{title}", "error": str(e)[:200]},
+                )
+
+        if stats["synced"] >= limit:
+            break
+        url = data.get("@odata.nextLink")
+
+    return active_object_ids, complete
+
+
+async def _mark_sharepoint_list_items_deleted(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    source_id: uuid.UUID,
+    active_object_ids: set[str],
+) -> int:
+    """Soft-delete list-item documents no longer present in a full
+    re-listing of all of this source's Lists -- mirrors
+    _mark_notion_pages_deleted's same-shaped problem (no delta/removal
+    signal from a full-refresh style sync) and its same empty-set guard
+    against ever mistaking "found nothing" for "delete everything"."""
+    if not active_object_ids:
+        return 0
+
+    result = await session.execute(
+        text(
+            "UPDATE documents SET status = 'deleted', "
+            "review_status = 'rejected', last_synced_at = now() "
+            "WHERE tenant_id = :tid AND source_id = :sid "
+            "AND source_object_id LIKE 'sharepoint:list:%' "
+            "AND status != 'deleted' "
+            "AND NOT (source_object_id = ANY(:active)) "
+            "RETURNING id"
+        ),
+        {"tid": tenant_id, "sid": source_id, "active": list(active_object_ids)},
+    )
+    deleted_doc_ids = [row.id for row in result.fetchall()]
+    await _cascade_delete_document_data(session, deleted_doc_ids)
+    await session.commit()
+    return len(deleted_doc_ids)
 
 
 async def _sharepoint_cursor_map(
