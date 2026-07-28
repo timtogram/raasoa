@@ -483,6 +483,16 @@ async def dashboard_create_source(
     source_id = _uuid.uuid4()
     tid = DEFAULT_TENANT
 
+    # Quota check: source limit. The dashboard used to bypass this
+    # entirely (a raw INSERT with no check at all) while POST
+    # /v1/sources enforced it -- the same limit must hold regardless of
+    # which door a caller comes through, or the "limit" isn't actually
+    # one.
+    from raasoa.middleware.metering import check_quota
+    allowed, reason = await check_quota(session, _uuid.UUID(tid), "sources")
+    if not allowed:
+        return JSONResponse(status_code=429, content={"detail": reason})
+
     await session.execute(
         text(
             "INSERT INTO sources (id, tenant_id, source_type, name, connection_config) "

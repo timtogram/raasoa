@@ -43,7 +43,11 @@ class Tenant(UUIDMixin, Base):
     max_queries_per_month: Mapped[int | None] = mapped_column(
         Integer, default=1000, server_default="1000",
     )
-    max_sources: Mapped[int | None] = mapped_column(Integer, default=1, server_default="1")
+    # 10, not 1 -- see alembic s9f0a1b2c3d4. A single-tenant deployment
+    # with more than one knowledge source (e.g. Notion + SharePoint) needs
+    # to provision at least a handful of named connectors plus the
+    # auto-created file-upload pseudo-source.
+    max_sources: Mapped[int | None] = mapped_column(Integer, default=10, server_default="10")
 
     # Admin API gate — see alembic m3f4a5b6c7d8. Default false so existing
     # legacy tenant-wide keys don't silently become admin keys on deploy.

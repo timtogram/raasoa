@@ -104,7 +104,7 @@ async def check_quota(
             result = await session.execute(
                 text(
                     "SELECT "
-                    "  (SELECT COALESCE(max_sources, 1) "
+                    "  (SELECT COALESCE(max_sources, 10) "
                     "   FROM tenants WHERE id = :tid) AS max_src, "
                     "  (SELECT COUNT(*) FROM sources "
                     "   WHERE tenant_id = :tid) AS current_src"
