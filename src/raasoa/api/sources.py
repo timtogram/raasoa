@@ -614,11 +614,18 @@ async def sync_source(
             body.query, body.limit,
         )
 
-        # Update sync status
+        # Update sync status. A connector that reports delta_complete=False
+        # (i.e. its backlog didn't fit in this one call's limit) must be
+        # marked "incomplete", not "completed" — otherwise an admin sees a
+        # falsely reassuring status while the sync is nowhere near caught
+        # up, and the scheduler has no signal to retry it sooner than the
+        # normal interval.
         has_results = stats.get("synced", 0) > 0
         is_unsupported = stats.get("status") == "unsupported"
         is_error = stats.get("status") == "error"
+        delta_complete = stats.get("delta_complete", True)
         status = "error" if is_error else (
+            "incomplete" if not delta_complete else
             "completed" if has_results or is_unsupported else "empty"
         )
         await session.execute(
@@ -1037,10 +1044,15 @@ async def _sync_sharepoint(
                     session, source_id, cursor_map, stats["synced"], "running",
                 )
 
-        if stats["delta_complete"]:
-            await _persist_sharepoint_cursor_map(
-                session, source_id, cursor_map, stats["synced"], "completed",
-            )
+        # Always leave an accurate final status, not just on success — a
+        # source whose backlog didn't fit in this call's limit must be
+        # visibly "incomplete" (distinct from "running", which means a
+        # call is actively in flight right now), so callers/schedulers
+        # know to retry rather than believing the sync fully caught up.
+        await _persist_sharepoint_cursor_map(
+            session, source_id, cursor_map, stats["synced"],
+            "completed" if stats["delta_complete"] else "incomplete",
+        )
 
     return stats
 
@@ -1733,6 +1745,22 @@ async def _sync_sharepoint_delta_drive(
     delta_link: str | None = None
 
     while url:
+        # Check the limit BETWEEN pages, never mid-page: Graph's delta feed
+        # only supports resuming from a page boundary (@odata.nextLink /
+        # @odata.deltaLink) -- there is no way to ask it to resume "partway
+        # through the page we were just processing". Stopping mid-page and
+        # returning some hand-rolled position (the previous bug: returning
+        # the original `cursor_url` argument unchanged) is not a valid
+        # resume point, so the next call always restarted from the exact
+        # same place -- permanently re-processing the same items and never
+        # advancing, for any drive whose backlog exceeds one call's limit.
+        # Checking here means a call may process a bit more than `limit`
+        # items if the current page is large, but every returned cursor is
+        # a real Graph-provided pointer that guarantees actual progress.
+        if stats["synced"] >= limit:
+            stats["delta_complete"] = False
+            return url
+
         resp = await client.get(
             url,
             headers=headers,
@@ -1755,10 +1783,6 @@ async def _sync_sharepoint_delta_drive(
                 )
                 stats["deleted"] += deleted
                 continue
-
-            if stats["synced"] >= limit:
-                stats["delta_complete"] = False
-                return cursor_url
 
             await _ingest_sharepoint_item(
                 session=session,
