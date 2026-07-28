@@ -366,8 +366,11 @@ sequential scans up to ~1M claims.
 - [ ] `RAASOA_MCP_DEFAULT_CLEARANCE` ≥ `internal`
 - [ ] TLS terminates at reverse proxy (Plesk / Caddy / Traefik)
 - [ ] `CORS_ORIGINS` set to known frontends only
-- [ ] Postgres only listens on the docker network (no host port in
-      `docker-compose.yml`)
+- [ ] Postgres's host port mapping removed from `docker-compose.yml`'s
+      `postgres:` service (`ports: - "${POSTGRES_PORT:-5433}:5432"`) — it
+      ships enabled by default for local dev `psql` access, but exposes
+      the database to anything that can reach the host's network unless
+      removed (or bound to `127.0.0.1:` only)
 - [ ] Backups encrypted at rest
 - [ ] Ollama models pulled from trusted registries
 

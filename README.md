@@ -138,9 +138,16 @@ AUTH_ENABLED=true
 API_KEYS=sk-your-key:your-tenant-uuid
 CORS_ORIGINS=https://your-app.example.com
 SIGNUP_ENABLED=false
+DASHBOARD_PASSWORD=<a strong password>
+WEBHOOK_SECRET=<a random secret>
+RAASOA_MCP_DEFAULT_CLEARANCE=internal
+POSTGRES_PASSWORD=<a strong password>
 ```
 
-Full config reference in `.env.example`.
+This is a starting point, not the full list — see
+[DEPLOYMENT.md's security checklist](DEPLOYMENT.md#6-security-checklist)
+before exposing an instance beyond a trusted network. Full config
+reference in `.env.example`.
 
 ## Architecture
 

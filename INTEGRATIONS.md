@@ -15,7 +15,7 @@ core actions (`searchKnowledge`, `ingestDocument`).
 
 > **Auth.** When `AUTH_ENABLED=true`, every request needs a Bearer API
 > key: `Authorization: Bearer sk-…`. Create one via
-> `POST /v1/tenants/signup` or the dashboard → Account. Keep `AUTH_ENABLED=true`
+> `POST /v1/tenants` or the dashboard → Account. Keep `AUTH_ENABLED=true`
 > for anything reachable from the internet.
 
 ---

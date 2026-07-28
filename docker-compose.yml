@@ -2,6 +2,12 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     platform: linux/amd64
+    # SECURITY: exposed on the host for local dev psql access. Before a
+    # production deployment reachable beyond a trusted network, either
+    # remove this ports: mapping entirely (the api/scheduler services
+    # reach postgres over the docker network regardless) or bind it to
+    # 127.0.0.1 only, e.g. "127.0.0.1:${POSTGRES_PORT:-5433}:5432" — see
+    # DEPLOYMENT.md's security checklist.
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     environment:
